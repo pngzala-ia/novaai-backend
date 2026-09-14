@@ -6,47 +6,30 @@ const OpenAI = require("openai");
 
 const app = express();
 
-// CORS
-app.use(cors({
-    origin: "*",
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type"]
-}));
-
+app.use(cors());
 app.use(express.json());
 
-// OpenAI
+const apiKey = process.env.OPENAI_API_KEY;
+
+if (!apiKey) {
+    console.error("ERRO: OPENAI_API_KEY não foi configurada.");
+}
+
 const client = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY
+    apiKey: apiKey
 });
 
-// TESTE DO SERVIDOR
 app.get("/", (req, res) => {
     res.json({
         status: "online",
-        message: "NovaAI Backend está funcionando!"
+        message: "NovaAI Backend está funcionando!",
+        openai_key: apiKey ? "configurado" : "não configurado"
     });
 });
 
-// TESTE DA API
-app.get("/api/health", (req, res) => {
-    res.json({
-        status: "online",
-        openai_key: process.env.OPENAI_API_KEY ? "configurada" : "NAO_CONFIGURADA"
-    });
-});
-
-// CHAT
 app.post("/api/chat", async (req, res) => {
-
     try {
-
-        console.log("=================================");
-        console.log("NovaAI recebeu uma mensagem");
-
         const { message } = req.body;
-
-        console.log("Mensagem:", message);
 
         if (!message || !message.trim()) {
             return res.status(400).json({
@@ -54,42 +37,33 @@ app.post("/api/chat", async (req, res) => {
             });
         }
 
-        if (!process.env.OPENAI_API_KEY) {
-            console.error("OPENAI_API_KEY NÃO CONFIGURADA");
-
+        if (!apiKey) {
             return res.status(500).json({
-                error: "OPENAI_API_KEY não está configurada no Render."
+                error: "OPENAI_API_KEY não configurada no servidor."
             });
         }
-
-        console.log("Enviando mensagem para OpenAI...");
 
         const response = await client.responses.create({
             model: "gpt-5-mini",
             input: message
         });
 
-        console.log("Resposta recebida da OpenAI");
-
         res.json({
             reply: response.output_text
         });
 
     } catch (error) {
-
-        console.error("=================================");
-        console.error("ERRO DA NOVAAI:");
-        console.error(error);
-        console.error("=================================");
+        console.error("Erro NovaAI:", error);
 
         res.status(500).json({
-            error: error.message || "Erro desconhecido ao consultar a IA."
+            error: "Não foi possível obter uma resposta da IA.",
+            details: error?.message || "Erro desconhecido"
         });
     }
 });
 
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, () => {
     console.log(`NovaAI rodando na porta ${PORT}`);
 });
