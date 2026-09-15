@@ -6,64 +6,189 @@ const OpenAI = require("openai");
 
 const app = express();
 
-app.use(cors());
+/* =========================
+   CONFIGURAÇÃO CORS
+========================= */
+
+const corsOptions = {
+    origin: function (origin, callback) {
+
+        // Permite chamadas sem Origin
+        // e também o "Origin: null" do TrebEdit
+        if (!origin || origin === "null") {
+            return callback(null, true);
+        }
+
+        // Durante os testes, permite qualquer origem
+        return callback(null, true);
+    },
+
+    methods: ["GET", "POST", "OPTIONS"],
+
+    allowedHeaders: [
+        "Content-Type",
+        "Authorization"
+    ],
+
+    credentials: false,
+
+    optionsSuccessStatus: 204
+};
+
+app.use(cors(corsOptions));
+
+app.options("*", cors(corsOptions));
+
 app.use(express.json());
+
+
+/* =========================
+   OPENAI
+========================= */
 
 const apiKey = process.env.OPENAI_API_KEY;
 
 if (!apiKey) {
-    console.error("ERRO: OPENAI_API_KEY não foi configurada.");
+
+    console.error(
+        "ERRO: OPENAI_API_KEY não foi configurada."
+    );
+
 }
 
-const client = new OpenAI({
-    apiKey: apiKey
-});
+const client = apiKey
+    ? new OpenAI({
+        apiKey: apiKey
+      })
+    : null;
+
+
+/* =========================
+   TESTE DO SERVIDOR
+========================= */
 
 app.get("/", (req, res) => {
+
     res.json({
+
         status: "online",
-        message: "NovaAI Backend está funcionando!",
-        openai_key: apiKey ? "configurado" : "não configurado"
+
+        message:
+            "NovaAI Backend está funcionando!",
+
+        openai_key:
+            apiKey
+                ? "configurado"
+                : "não configurado"
+
     });
+
 });
+
+
+/* =========================
+   CHAT NOVAAI
+========================= */
 
 app.post("/api/chat", async (req, res) => {
+
     try {
-        const { message } = req.body;
 
-        if (!message || !message.trim()) {
+        const { message } = req.body || {};
+
+
+        /* MENSAGEM VAZIA */
+
+        if (
+            !message ||
+            typeof message !== "string" ||
+            !message.trim()
+        ) {
+
             return res.status(400).json({
-                error: "Mensagem vazia."
+
+                error:
+                    "Mensagem vazia."
+
             });
+
         }
 
-        if (!apiKey) {
+
+        /* API KEY */
+
+        if (!apiKey || !client) {
+
             return res.status(500).json({
-                error: "OPENAI_API_KEY não configurada no servidor."
+
+                error:
+                    "OPENAI_API_KEY não configurada no servidor."
+
             });
+
         }
 
-        const response = await client.responses.create({
-            model: "gpt-5-mini",
-            input: message
+
+        /* CHAMADA OPENAI */
+
+        const response =
+            await client.responses.create({
+
+                model: "gpt-5-mini",
+
+                input: message.trim()
+
+            });
+
+
+        /* RESPOSTA */
+
+        return res.json({
+
+            reply:
+                response.output_text ||
+                "Não recebi uma resposta da IA."
+
         });
 
-        res.json({
-            reply: response.output_text
-        });
 
     } catch (error) {
-        console.error("Erro NovaAI:", error);
 
-        res.status(500).json({
-            error: "Não foi possível obter uma resposta da IA.",
-            details: error?.message || "Erro desconhecido"
+        console.error(
+            "Erro NovaAI:",
+            error
+        );
+
+
+        const status =
+            error?.status || 500;
+
+
+        return res.status(status).json({
+
+            error:
+                error?.message ||
+                "Não foi possível obter uma resposta da IA.",
+
+            code:
+                error?.code || null,
+
+            type:
+                error?.type || null
+
         });
+
     }
+
 });
 
-const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
-    console.log(`NovaAI rodando na porta ${PORT}`);
-});
+/* =========================
+   SERVIDOR
+========================= */
+
+const PORT =
+    process.env.PORT || 3000;
+
+
+app
