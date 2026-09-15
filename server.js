@@ -6,59 +6,47 @@ const OpenAI = require("openai");
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
-// =====================================================
-// CORS - CONFIGURAÇÃO PARA TREBEDIT / FILE://
-// =====================================================
+// ===============================
+// CONFIGURAÇÕES
+// ===============================
 
-app.use((req, res, next) => {
-  // Permite qualquer origem, inclusive origin: null
-  res.header("Access-Control-Allow-Origin", "*");
+const PORT = process.env.PORT || 10000;
 
-  // Métodos permitidos
-  res.header(
-    "Access-Control-Allow-Methods",
-    "GET, POST, OPTIONS"
-  );
+// ===============================
+// CORS
+// ===============================
 
-  // Cabeçalhos permitidos
-  res.header(
-    "Access-Control-Allow-Headers",
-    "Content-Type, Authorization"
-  );
+// Permite o TrebEdit / file://
+app.use(
+  cors({
+    origin: true,
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: false
+  })
+);
 
-  // Permite requisições de qualquer origem
-  res.header("Access-Control-Allow-Credentials", "false");
+// Responde explicitamente ao preflight
+app.options("*", cors());
 
-  // Responde imediatamente ao preflight
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(204);
-  }
+// ===============================
+// JSON
+// ===============================
 
-  next();
-});
+app.use(express.json({ limit: "1mb" }));
 
-// Também mantém o middleware CORS
-app.use(cors({
-  origin: "*",
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"]
-}));
-
-app.use(express.json());
-
-// =====================================================
+// ===============================
 // OPENAI
-// =====================================================
+// ===============================
 
-const client = new OpenAI({
+const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
 
-// =====================================================
-// TESTE DO BACKEND
-// =====================================================
+// ===============================
+// ROTA PRINCIPAL
+// ===============================
 
 app.get("/", (req, res) => {
   res.json({
@@ -68,13 +56,24 @@ app.get("/", (req, res) => {
   });
 });
 
-// =====================================================
-// NOVAAI - CHAT
-// =====================================================
+// ===============================
+// ROTA DE TESTE
+// ===============================
+
+app.get("/api/status", (req, res) => {
+  res.json({
+    status: "online",
+    novaAI: "online",
+    openai_configurada: !!process.env.OPENAI_API_KEY
+  });
+});
+
+// ===============================
+// CHAT NOVAAI
+// ===============================
 
 app.post("/api/chat", async (req, res) => {
   try {
-
     const { message } = req.body;
 
     if (!message || typeof message !== "string") {
@@ -85,58 +84,60 @@ app.post("/api/chat", async (req, res) => {
 
     if (!process.env.OPENAI_API_KEY) {
       return res.status(500).json({
-        error: "OPENAI_API_KEY não configurada no Render."
+        error: "OPENAI_API_KEY não configurada no servidor."
       });
     }
 
-    console.log("=================================");
-    console.log("Mensagem recebida:");
-    console.log(message);
-    console.log("=================================");
+    console.log("NovaAI recebeu:", message);
 
-    const response = await client.responses.create({
+    const response = await openai.responses.create({
       model: "gpt-5-mini",
       input: message
     });
 
-    const reply =
-      response.output_text ||
-      "A NovaAI não conseguiu gerar uma resposta.";
+    const resposta = response.output_text || "Não consegui gerar uma resposta.";
 
     console.log("NovaAI respondeu com sucesso.");
 
-    res.status(200).json({
-      reply: reply
+    res.json({
+      success: true,
+      response: resposta
     });
 
   } catch (error) {
-
-    console.error("=================================");
-    console.error("ERRO NOVAAI:");
-    console.error(error);
-    console.error("=================================");
+    console.error("Erro na NovaAI:", error);
 
     res.status(500).json({
-      error: "Erro ao conversar com a NovaAI.",
-      details: error.message || "Erro desconhecido."
+      success: false,
+      error: error.message || "Erro interno do servidor."
     });
   }
 });
 
-// =====================================================
+// ===============================
+// TRATAMENTO DE ERROS
+// ===============================
+
+app.use((err, req, res, next) => {
+  console.error("Erro geral:", err);
+
+  res.status(500).json({
+    error: "Erro interno do servidor."
+  });
+});
+
+// ===============================
 // INICIAR SERVIDOR
-// =====================================================
+// ===============================
 
-app.listen(PORT, () => {
-
-  console.log("=================================");
+app.listen(PORT, "0.0.0.0", () => {
+  console.log("================================");
   console.log("NovaAI Backend funcionando!");
   console.log("Porta:", PORT);
   console.log(
     "OpenAI configurada:",
     !!process.env.OPENAI_API_KEY
   );
-  console.log("CORS manual ativado.");
-  console.log("=================================");
-
+  console.log("CORS ativado.");
+  console.log("================================");
 });
