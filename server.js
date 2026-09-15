@@ -1,86 +1,72 @@
 const express = require("express");
-const cors = require("cors");
-require("dotenv").config();
-
 const OpenAI = require("openai");
+require("dotenv").config();
 
 const app = express();
 
-const PORT = process.env.PORT || 3000;
-const API_KEY = process.env.OPENAI_API_KEY;
-
-/* =========================
-   CORS
-========================= */
-
-app.use(
-    cors({
-        origin: true,
-        methods: ["GET", "POST", "OPTIONS"],
-        allowedHeaders: ["Content-Type", "Authorization"]
-    })
-);
+// ===============================
+// CONFIGURAÇÕES
+// ===============================
 
 app.use(express.json());
 
-/* =========================
-   OPENAI
-========================= */
+// CORS liberado para o aplicativo
+app.use((req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header(
+        "Access-Control-Allow-Methods",
+        "GET, POST, PUT, DELETE, OPTIONS"
+    );
+    res.header(
+        "Access-Control-Allow-Headers",
+        "Origin, X-Requested-With, Content-Type, Accept, Authorization"
+    );
 
-let client = null;
+    if (req.method === "OPTIONS") {
+        return res.sendStatus(204);
+    }
 
-if (API_KEY) {
-    client = new OpenAI({
-        apiKey: API_KEY
-    });
+    next();
+});
 
-    console.log("OPENAI_API_KEY configurada.");
-} else {
-    console.warn("AVISO: OPENAI_API_KEY não configurada.");
+// ===============================
+// OPENAI
+// ===============================
+
+const apiKey = process.env.OPENAI_API_KEY;
+
+if (!apiKey) {
+    console.error("ERRO: OPENAI_API_KEY não configurada.");
 }
 
-/* =========================
-   TESTE DO SERVIDOR
-========================= */
+const client = apiKey
+    ? new OpenAI({
+        apiKey: apiKey
+    })
+    : null;
+
+// ===============================
+// TESTE DO SERVIDOR
+// ===============================
 
 app.get("/", (req, res) => {
     res.json({
         status: "online",
         service: "NovaAI Backend",
-        openai: client ? "configurada" : "não configurada",
+        openai: apiKey ? "configurada" : "não configurada",
         message: "Backend funcionando corretamente."
     });
 });
 
-/* =========================
-   HEALTH CHECK
-========================= */
-
-app.get("/api/health", (req, res) => {
-    res.json({
-        status: "ok",
-        backend: "NovaAI",
-        openai: client ? "connected" : "not_configured"
-    });
-});
-
-/* =========================
-   CHAT NOVAAI
-========================= */
+// ===============================
+// CHAT DA NOVAAI
+// ===============================
 
 app.post("/api/chat", async (req, res) => {
-
     try {
+        const { message } = req.body;
 
-        const message = req.body?.message;
-
-        if (!message || typeof message !== "string") {
-            return res.status(400).json({
-                error: "Mensagem inválida."
-            });
-        }
-
-        if (!message.trim()) {
+        if (!message || typeof message !== "string" || !message.trim()) {
             return res.status(400).json({
                 error: "Mensagem vazia."
             });
@@ -96,7 +82,17 @@ app.post("/api/chat", async (req, res) => {
 
         const response = await client.responses.create({
             model: "gpt-5-mini",
-            input: message
+            input: [
+                {
+                    role: "system",
+                    content:
+                        "Você é a NovaAI, assistente oficial integrada à rede social GeraçãoZ. Responda em português do Brasil de forma útil, amigável e clara."
+                },
+                {
+                    role: "user",
+                    content: message
+                }
+            ]
         });
 
         const reply = response.output_text || "Não consegui gerar uma resposta.";
@@ -109,40 +105,23 @@ app.post("/api/chat", async (req, res) => {
         });
 
     } catch (error) {
-
-        console.error("ERRO NOVAAI:", error);
+        console.error("ERRO NA NOVAAI:");
+        console.error(error);
 
         return res.status(500).json({
             success: false,
-            error: "Erro ao conversar com a NovaAI.",
+            error: "Erro ao gerar resposta da NovaAI.",
             details: error?.message || "Erro desconhecido."
         });
     }
 });
 
-/* =========================
-   ERRO GLOBAL
-========================= */
+// ===============================
+// SERVIDOR
+// ===============================
 
-app.use((err, req, res, next) => {
-
-    console.error("ERRO DO SERVIDOR:", err);
-
-    res.status(500).json({
-        error: "Erro interno do servidor."
-    });
-});
-
-/* =========================
-   INICIAR SERVIDOR
-========================= */
+const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, "0.0.0.0", () => {
-
-    console.log("--------------------------------");
-    console.log("NovaAI Backend iniciado");
-    console.log("Porta:", PORT);
-    console.log("OpenAI:", client ? "CONFIGURADA" : "NÃO CONFIGURADA");
-    console.log("--------------------------------");
-
+    console.log(`NovaAI Backend rodando na porta ${PORT}`);
 });
