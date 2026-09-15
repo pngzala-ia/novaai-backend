@@ -7,55 +7,56 @@ dotenv.config();
 
 const app = express();
 
-const PORT = process.env.PORT || 10000;
-
-/* =========================================================
-   OPENAI
-========================================================= */
-
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
-});
-
-/* =========================================================
+/* =========================================
    CORS
-   Permite o GeraçãoZ aberto pelo TrebEdit
-   inclusive quando o navegador envia Origin: null
-========================================================= */
+   Permite o HTML do TrebEdit (origin null)
+========================================= */
 
-const corsOptions = {
-  origin: true,
+app.use(cors({
+  origin: "*",
   methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type"],
-  optionsSuccessStatus: 200
-};
+  allowedHeaders: ["Content-Type", "Authorization"]
+}));
 
-app.use(cors(corsOptions));
+/* Responde às requisições de preflight */
+app.options("*", cors({
+  origin: "*",
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"]
+}));
 
-/* Preflight */
-app.options("*", cors(corsOptions));
-
-/* =========================================================
-   BODY
-========================================================= */
+/* =========================================
+   JSON
+========================================= */
 
 app.use(express.json());
 
-/* =========================================================
+/* =========================================
+   OPENAI
+========================================= */
+
+const apiKey = process.env.OPENAI_API_KEY;
+
+const openai = new OpenAI({
+  apiKey: apiKey
+});
+
+/* =========================================
    TESTE DO SERVIDOR
-========================================================= */
+========================================= */
 
 app.get("/", (req, res) => {
   res.json({
     status: "online",
     novaAI: "online",
-    openai_configurada: !!process.env.OPENAI_API_KEY
+    openai_configurada: !!apiKey,
+    cors: "ativo"
   });
 });
 
-/* =========================================================
-   CHAT
-========================================================= */
+/* =========================================
+   CHAT DA NOVAAI
+========================================= */
 
 app.post("/api/chat", async (req, res) => {
 
@@ -64,86 +65,60 @@ app.post("/api/chat", async (req, res) => {
     const { message } = req.body;
 
     if (!message || typeof message !== "string") {
-
       return res.status(400).json({
-        error: "Mensagem inválida."
+        error: "Mensagem não informada."
       });
-
     }
 
-    if (!process.env.OPENAI_API_KEY) {
-
+    if (!apiKey) {
       return res.status(500).json({
-        error: "OPENAI_API_KEY não configurada no Render."
+        error: "OPENAI_API_KEY não configurada no servidor."
       });
-
     }
 
-    console.log("Mensagem recebida:", message);
+    console.log("NovaAI recebeu:", message);
 
     const response = await openai.responses.create({
-
       model: "gpt-5-mini",
-
       input: message
-
     });
 
-    const text =
-      response.output_text ||
-      "Não consegui gerar uma resposta.";
+    const resposta = response.output_text || "Não consegui gerar uma resposta.";
 
-    console.log("Resposta gerada com sucesso.");
+    console.log("NovaAI respondeu.");
 
     res.json({
       success: true,
-      response: text
+      reply: resposta
     });
 
   } catch (error) {
 
-    console.error("ERRO OPENAI:", error);
+    console.error("ERRO NOVAAI:", error);
 
     res.status(500).json({
-
       success: false,
-
-      error:
-        error?.message ||
-        "Erro interno no servidor."
-
+      error: "Erro ao conversar com a NovaAI.",
+      details: error.message
     });
 
   }
 
 });
 
-/* =========================================================
-   ERRO 404
-========================================================= */
+/* =========================================
+   PORTA
+========================================= */
 
-app.use((req, res) => {
-
-  res.status(404).json({
-    error: "Rota não encontrada."
-  });
-
-});
-
-/* =========================================================
-   INICIAR SERVIDOR
-========================================================= */
+const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
 
-  console.log("=================================");
+  console.log("================================");
   console.log("NovaAI Backend funcionando!");
   console.log("Porta:", PORT);
-  console.log(
-    "OpenAI configurada:",
-    !!process.env.OPENAI_API_KEY
-  );
-  console.log("CORS ativado.");
-  console.log("=================================");
+  console.log("OpenAI configurada:", !!apiKey);
+  console.log("CORS ativado!");
+  console.log("================================");
 
 });
