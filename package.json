@@ -1,7 +1,7 @@
 {
   "name": "novaai-backend",
-  "version": "1.0.0",
-  "description": "Backend da plataforma NovaAI",
+  "version": "2.0.0",
+  "description": "Backend da NovaAI com chat, geração e edição de imagens",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -10,6 +10,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
+    "multer": "^2.0.2",
     "openai": "^5.12.2"
   }
 }
