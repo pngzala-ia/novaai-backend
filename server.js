@@ -6,212 +6,139 @@ const OpenAI = require("openai");
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3000;
 
-// ================================
-// CONFIGURAÇÕES
-// ================================
+const PORT = process.env.PORT || 10000;
 
-app.use(cors({
-  origin: true,
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"]
-}));
+// =====================================================
+// CORS
+// Aceita o TrebEdit/file:// e também páginas normais
+// =====================================================
 
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      // TrebEdit / file:// normalmente chega como origin "null"
+      if (!origin || origin === "null") {
+        return callback(null, true);
+      }
+
+      // Permite qualquer origem para este projeto
+      return callback(null, true);
+    },
+
+    methods: ["GET", "POST", "OPTIONS"],
+
+    allowedHeaders: [
+      "Content-Type",
+      "Authorization"
+    ],
+
+    optionsSuccessStatus: 204
+  })
+);
+
+// Garante que requisições OPTIONS sejam respondidas
 app.options("*", cors());
 
 app.use(express.json({ limit: "1mb" }));
 
-// ================================
+// =====================================================
 // OPENAI
-// ================================
+// =====================================================
 
 const apiKey = process.env.OPENAI_API_KEY;
 
-const client = apiKey
-  ? new OpenAI({
-      apiKey: apiKey
-    })
-  : null;
+const openai = new OpenAI({
+  apiKey: apiKey
+});
 
-// ================================
+// =====================================================
 // ROTA PRINCIPAL
-// ================================
+// =====================================================
 
 app.get("/", (req, res) => {
   res.json({
     status: "online",
-    service: "NovaAI Backend",
-    openai: apiKey ? "configurada" : "não configurada",
-    message: "Backend funcionando corretamente."
+    message: "NovaAI Backend funcionando!",
+    openai_configurada: !!apiKey
   });
 });
 
-// ================================
-// ROTA DE TESTE
-// ================================
+// =====================================================
+// TESTE DA API
+// =====================================================
 
-app.get("/api/status", (req, res) => {
+app.get("/api/test", (req, res) => {
   res.json({
-    online: true,
-    openai: apiKey ? true : false
+    status: "ok",
+    message: "API da NovaAI funcionando!"
   });
 });
 
-// ================================
-// NOVAAI
-// ================================
+// =====================================================
+// CHAT DA NOVAAI
+// =====================================================
 
 app.post("/api/chat", async (req, res) => {
-
   try {
-
-    // Verifica API Key
-    if (!apiKey || !client) {
-      return res.status(500).json({
-        error: "OPENAI_API_KEY não configurada.",
-        details: "Adicione OPENAI_API_KEY nas Environment Variables do Render."
-      });
-    }
-
-    // Verifica mensagem
-    const message = req.body?.message;
+    const { message } = req.body;
 
     if (!message || typeof message !== "string") {
       return res.status(400).json({
-        error: "Mensagem inválida.",
-        details: "Envie uma mensagem no campo 'message'."
+        error: "Mensagem inválida."
       });
     }
 
-    // Limite simples para evitar mensagens gigantes
-    const userMessage = message.trim().slice(0, 4000);
-
-    if (!userMessage) {
-      return res.status(400).json({
-        error: "Mensagem vazia."
+    if (!apiKey) {
+      return res.status(500).json({
+        error: "OPENAI_API_KEY não configurada no Render."
       });
     }
 
-    console.log("NovaAI recebeu:", userMessage);
+    console.log("Mensagem recebida:", message);
 
-    // ================================
-    // CHAMADA PARA OPENAI
-    // ================================
-
-    const response = await client.responses.create({
-      model: "gpt-5.6-luna",
-      input: [
-        {
-          role: "system",
-          content:
-            "Você é a NovaAI, assistente de inteligência artificial integrada à rede social GeraçãoZ. Responda em português do Brasil de forma clara, amigável e útil."
-        },
-        {
-          role: "user",
-          content: userMessage
-        }
-      ],
-      max_output_tokens: 1000
+    const response = await openai.responses.create({
+      model: "gpt-5-mini",
+      input: message
     });
 
-    const reply = response.output_text || "";
+    const reply = response.output_text || "Não consegui gerar uma resposta.";
 
-    if (!reply) {
-      return res.status(500).json({
-        error: "A OpenAI não retornou texto.",
-        details: "A resposta da API veio sem conteúdo."
-      });
-    }
+    console.log("Resposta gerada com sucesso.");
 
-    console.log("NovaAI respondeu com sucesso.");
-
-    return res.status(200).json({
-      success: true,
+    res.json({
       reply: reply
     });
 
   } catch (error) {
+    console.error("ERRO OPENAI:", error);
 
-    console.error("ERRO NOVAAI:");
-    console.error(error);
-
-    // ================================
-    // SEM CRÉDITOS
-    // ================================
-
+    // Sem créditos
     if (
-      error?.status === 429 ||
-      error?.code === "insufficient_quota" ||
-      error?.message?.toLowerCase().includes("credit")
+      error.status === 429 ||
+      error.code === "insufficient_quota"
     ) {
       return res.status(429).json({
-        error: "A API da NovaAI está sem créditos.",
-        details:
-          "A conta da API OpenAI não possui créditos disponíveis no momento. Adicione créditos/billing na conta da OpenAI para continuar."
+        error: "A conta da OpenAI está sem créditos disponíveis.",
+        details: "Adicione créditos na conta da OpenAI para continuar usando a NovaAI."
       });
     }
 
-    // ================================
-    // API KEY INVÁLIDA
-    // ================================
-
-    if (
-      error?.status === 401 ||
-      error?.code === "invalid_api_key"
-    ) {
-      return res.status(401).json({
-        error: "OPENAI_API_KEY inválida.",
-        details:
-          "Verifique a chave OPENAI_API_KEY cadastrada nas Environment Variables do Render."
-      });
-    }
-
-    // ================================
-    // LIMITE DE REQUISIÇÕES
-    // ================================
-
-    if (error?.status === 429) {
-      return res.status(429).json({
-        error: "Limite de requisições atingido.",
-        details:
-          "A API recebeu muitas requisições. Aguarde um pouco e tente novamente."
-      });
-    }
-
-    // ================================
-    // ERRO GENÉRICO
-    // ================================
-
-    return res.status(500).json({
+    res.status(500).json({
       error: "Erro ao conversar com a NovaAI.",
-      details: error?.message || "Erro desconhecido."
+      details: error.message || "Erro desconhecido."
     });
   }
 });
 
-// ================================
-// ERRO DE JSON
-// ================================
-
-app.use((error, req, res, next) => {
-
-  if (error instanceof SyntaxError && error.status === 400) {
-    return res.status(400).json({
-      error: "JSON inválido."
-    });
-  }
-
-  next(error);
-});
-
-// ================================
+// =====================================================
 // INICIAR SERVIDOR
-// ================================
+// =====================================================
 
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`NovaAI Backend funcionando na porta ${PORT}`);
-  console.log(
-    `OPENAI_API_KEY: ${apiKey ? "CONFIGURADA" : "NÃO CONFIGURADA"}`
-  );
+  console.log("=================================");
+  console.log("NovaAI Backend funcionando!");
+  console.log("Porta:", PORT);
+  console.log("OpenAI configurada:", !!apiKey);
+  console.log("=================================");
 });
