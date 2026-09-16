@@ -1268,4 +1268,252 @@ app.post(
             return res.status(400).json({
 
                 error:
-                    "O comentário deve ter 
+                    "O comentário deve ter return (
+                        item.id ===
+                        req.params.id
+                    );
+                }
+            );
+
+        if (!status) {
+
+            return res.status(404).json({
+                error:
+                    "Status não encontrado."
+            });
+
+        }
+
+        status.liked =
+            !status.liked;
+
+        if (status.liked) {
+
+            status.likes += 1;
+
+        } else {
+
+            status.likes =
+                Math.max(
+                    0,
+                    status.likes - 1
+                );
+
+        }
+
+        return res.json({
+            success: true,
+            liked: status.liked,
+            likes: status.likes
+        });
+
+    }
+);
+
+
+/* =====================================================
+   COMENTAR STATUS
+===================================================== */
+
+app.post(
+    "/api/status/:id/comments",
+    function(req, res) {
+
+        const status =
+            statuses.find(
+                function(item) {
+                    return (
+                        item.id ===
+                        req.params.id
+                    );
+                }
+            );
+
+        if (!status) {
+
+            return res.status(404).json({
+                error:
+                    "Status não encontrado."
+            });
+
+        }
+
+        const text =
+            cleanText(
+                req.body.text
+            );
+
+        if (!text) {
+
+            return res.status(400).json({
+                error:
+                    "Digite um comentário."
+            });
+
+        }
+
+        const comment = {
+
+            id:
+                createId("comment"),
+
+            user:
+                {
+                    id:
+                        DEFAULT_USER.id,
+
+                    name:
+                        DEFAULT_USER.name
+                },
+
+            text:
+                text,
+
+            createdAt:
+                now()
+
+        };
+
+        status.comments.push(
+            comment
+        );
+
+        return res.status(201).json({
+            success: true,
+            comment: comment
+        });
+
+    }
+);
+
+
+/* =====================================================
+   APAGAR COMENTÁRIO DO STATUS
+===================================================== */
+
+app.delete(
+    "/api/status/:statusId/comments/:commentId",
+    function(req, res) {
+
+        const status =
+            statuses.find(
+                function(item) {
+                    return (
+                        item.id ===
+                        req.params.statusId
+                    );
+                }
+            );
+
+        if (!status) {
+
+            return res.status(404).json({
+                error:
+                    "Status não encontrado."
+            });
+
+        }
+
+        const index =
+            status.comments.findIndex(
+                function(comment) {
+                    return (
+                        comment.id ===
+                        req.params.commentId
+                    );
+                }
+            );
+
+        if (index === -1) {
+
+            return res.status(404).json({
+                error:
+                    "Comentário não encontrado."
+            });
+
+        }
+
+        status.comments.splice(
+            index,
+            1
+        );
+
+        return res.json({
+            success: true
+        });
+
+    }
+);
+
+
+/* =====================================================
+   ERRO DE UPLOAD
+===================================================== */
+
+app.use(
+    function(error, req, res, next) {
+
+        console.error(
+            "ERRO DO SERVIDOR:",
+            error
+        );
+
+        if (
+            error &&
+            error.code ===
+                "LIMIT_FILE_SIZE"
+        ) {
+
+            return res.status(413).json({
+                error:
+                    "A imagem é muito grande. Limite: 10 MB."
+            });
+
+        }
+
+        return res.status(500).json({
+            error:
+                error &&
+                error.message
+                    ? error.message
+                    : "Erro interno do servidor."
+        });
+
+    }
+);
+
+
+/* =====================================================
+   INICIAR SERVIDOR
+===================================================== */
+
+app.listen(
+    PORT,
+    function() {
+
+        console.log(
+            "================================="
+        );
+
+        console.log(
+            "NovaAI + GeraçãoZ online"
+        );
+
+        console.log(
+            "Porta:",
+            PORT
+        );
+
+        console.log(
+            "OpenAI:",
+            OPENAI_API_KEY
+                ? "CONFIGURADA"
+                : "NAO CONFIGURADA"
+        );
+
+        console.log(
+            "================================="
+        );
+
+    }
+);
