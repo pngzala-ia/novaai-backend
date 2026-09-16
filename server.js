@@ -14,9 +14,11 @@ const OPENAI_API_KEY =
     process.env.OPENAI_API_KEY;
 
 if (!OPENAI_API_KEY) {
+
     console.warn(
         "⚠️ OPENAI_API_KEY não configurada."
     );
+
 }
 
 const openai = new OpenAI({
@@ -31,14 +33,22 @@ const openai = new OpenAI({
 app.use(
     cors({
         origin: "*",
-        methods: ["GET", "POST", "OPTIONS"],
-        allowedHeaders: ["Content-Type"]
+        methods: [
+            "GET",
+            "POST",
+            "DELETE",
+            "OPTIONS"
+        ],
+        allowedHeaders: [
+            "Content-Type"
+        ]
     })
 );
 
+
 app.use(
     express.json({
-        limit: "2mb"
+        limit: "12mb"
     })
 );
 
@@ -48,59 +58,286 @@ app.use(
 ===================================================== */
 
 const upload = multer({
-    storage: multer.memoryStorage(),
+
+    storage:
+        multer.memoryStorage(),
 
     limits: {
-        fileSize: 10 * 1024 * 1024
+        fileSize:
+            10 * 1024 * 1024
     },
 
-    fileFilter: function(req, file, cb) {
+    fileFilter:
+        function(req, file, cb) {
 
-        if (
-            file.mimetype &&
-            file.mimetype.startsWith("image/")
-        ) {
-            cb(null, true);
-        } else {
-            cb(
-                new Error(
-                    "Envie somente uma imagem."
-                )
-            );
+            if (
+                file.mimetype &&
+                file.mimetype.startsWith("image/")
+            ) {
+
+                cb(
+                    null,
+                    true
+                );
+
+            } else {
+
+                cb(
+                    new Error(
+                        "Envie somente uma imagem."
+                    )
+                );
+
+            }
+
         }
-    }
+
 });
+
+
+/* =====================================================
+   BANCO TEMPORÁRIO
+===================================================== */
+
+let posts = [];
+
+let statuses = [];
+
+let nextPostId = 1;
+
+let nextStatusId = 1;
+
+let nextCommentId = 1;
+
+
+/* =====================================================
+   FUNÇÕES AUXILIARES
+===================================================== */
+
+function cleanText(value, max = 500) {
+
+    if (
+        typeof value !== "string"
+    ) {
+
+        return "";
+
+    }
+
+    return value
+        .trim()
+        .slice(0, max);
+
+}
+
+
+function cleanUserId(value) {
+
+    const userId =
+        cleanText(
+            value,
+            100
+        );
+
+    return userId ||
+        "usuario-local";
+
+}
+
+
+function isImageData(value) {
+
+    if (
+        typeof value !== "string"
+    ) {
+
+        return false;
+
+    }
+
+    return (
+        value.startsWith(
+            "data:image/"
+        ) ||
+        /^https?:\/\//i.test(
+            value
+        )
+    );
+
+}
+
+
+function createComment(
+    userId,
+    text
+) {
+
+    return {
+
+        id:
+            nextCommentId++,
+
+        userId:
+            cleanUserId(
+                userId
+            ),
+
+        name:
+            "Você",
+
+        text:
+            cleanText(
+                text,
+                500
+            ),
+
+        createdAt:
+            new Date().toISOString()
+
+    };
+
+}
+
+
+function preparePost(
+    post,
+    currentUserId
+) {
+
+    return {
+
+        id:
+            post.id,
+
+        userId:
+            post.userId,
+
+        name:
+            post.name,
+
+        image:
+            post.image,
+
+        caption:
+            post.caption,
+
+        likes:
+            post.likes.length,
+
+        liked:
+            post.likes.includes(
+                currentUserId
+            ),
+
+        comments:
+            post.comments,
+
+        createdAt:
+            post.createdAt
+
+    };
+
+}
+
+
+function prepareStatus(
+    status,
+    currentUserId
+) {
+
+    return {
+
+        id:
+            status.id,
+
+        userId:
+            status.userId,
+
+        name:
+            status.name,
+
+        image:
+            status.image,
+
+        caption:
+            status.caption,
+
+        likes:
+            status.likes.length,
+
+        liked:
+            status.likes.includes(
+                currentUserId
+            ),
+
+        comments:
+            status.comments,
+
+        createdAt:
+            status.createdAt
+
+    };
+
+}
 
 
 /* =====================================================
    ROTA PRINCIPAL
 ===================================================== */
 
-app.get("/", function(req, res) {
+app.get(
+    "/",
+    function(req, res) {
 
-    res.json({
-        status: "online",
-        app: "NovaAI",
-        openai:
-            !!OPENAI_API_KEY
-    });
+        res.json({
 
-});
+            status:
+                "online",
+
+            app:
+                "NovaAI + GeraçãoZ",
+
+            openai:
+                !!OPENAI_API_KEY,
+
+            posts:
+                posts.length,
+
+            statuses:
+                statuses.length
+
+        });
+
+    }
+);
 
 
 /* =====================================================
    HEALTH CHECK
 ===================================================== */
 
-app.get("/api/health", function(req, res) {
+app.get(
+    "/api/health",
+    function(req, res) {
 
-    res.json({
-        ok: true,
-        openai:
-            !!OPENAI_API_KEY
-    });
+        res.json({
 
-});
+            ok:
+                true,
+
+            openai:
+                !!OPENAI_API_KEY,
+
+            posts:
+                posts.length,
+
+            statuses:
+                statuses.length
+
+        });
+
+    }
+);
 
 
 /* =====================================================
@@ -118,11 +355,14 @@ app.post(
                     ? req.body.message.trim()
                     : "";
 
+
             if (!message) {
 
                 return res.status(400).json({
+
                     error:
                         "Digite uma mensagem."
+
                 });
 
             }
@@ -131,8 +371,10 @@ app.post(
             if (!OPENAI_API_KEY) {
 
                 return res.status(500).json({
+
                     error:
                         "OPENAI_API_KEY não configurada no servidor."
+
                 });
 
             }
@@ -146,22 +388,21 @@ app.post(
 
                     instructions:
                         `
-Você é a NovaAI, assistente oficial
-da GeraçãoZ.
+Você é a NovaAI, assistente oficial da GeraçãoZ.
 
 Responda em português do Brasil,
 a menos que o usuário peça outro idioma.
 
 Seja natural, útil e objetiva.
 
-IMPORTANTE:
-Você é apenas o assistente de conversa.
-Pedidos de geração ou edição de imagens
-são tratados por rotas específicas
+Pedidos de geração e edição de imagens
+são tratados pelas rotas específicas
 do servidor.
                         `,
 
-                    input: message
+                    input:
+                        message
+
                 });
 
 
@@ -172,8 +413,10 @@ do servidor.
             if (!answer) {
 
                 return res.status(502).json({
+
                     error:
                         "A API não retornou texto."
+
                 });
 
             }
@@ -181,9 +424,11 @@ do servidor.
 
             return res.json({
 
-                response: answer,
+                response:
+                    answer,
 
-                output_text: answer
+                output_text:
+                    answer
 
             });
 
@@ -229,8 +474,10 @@ app.post(
             if (!prompt) {
 
                 return res.status(400).json({
+
                     error:
                         "Informe o que você quer criar."
+
                 });
 
             }
@@ -239,8 +486,10 @@ app.post(
             if (!OPENAI_API_KEY) {
 
                 return res.status(500).json({
+
                     error:
                         "OPENAI_API_KEY não configurada no servidor."
+
                 });
 
             }
@@ -258,10 +507,12 @@ app.post(
                     model:
                         "gpt-image-2",
 
-                    prompt: prompt,
+                    prompt:
+                        prompt,
 
                     size:
                         "1024x1024"
+
                 });
 
 
@@ -303,7 +554,8 @@ app.post(
 
             return res.json({
 
-                success: true,
+                success:
+                    true,
 
                 image:
                     imageUrl,
@@ -353,8 +605,10 @@ app.post(
             if (!req.file) {
 
                 return res.status(400).json({
+
                     error:
                         "Nenhuma imagem foi enviada."
+
                 });
 
             }
@@ -363,8 +617,10 @@ app.post(
             if (!OPENAI_API_KEY) {
 
                 return res.status(500).json({
+
                     error:
                         "OPENAI_API_KEY não configurada no servidor."
+
                 });
 
             }
@@ -383,22 +639,22 @@ app.post(
             );
 
 
-            /*
-             * O SDK recebe um arquivo.
-             */
-
             const file =
                 new File(
+
                     [
                         req.file.buffer
                     ],
+
                     req.file.originalname ||
                     "imagem.png",
+
                     {
                         type:
                             req.file.mimetype ||
                             "image/png"
                     }
+
                 );
 
 
@@ -416,6 +672,7 @@ app.post(
 
                     size:
                         "1024x1024"
+
                 });
 
 
@@ -457,7 +714,8 @@ app.post(
 
             return res.json({
 
-                success: true,
+                success:
+                    true,
 
                 image:
                     imageUrl,
@@ -494,36 +752,141 @@ app.post(
 
 
 /* =====================================================
-   ERROS DE UPLOAD
+   CRIAR POST
 ===================================================== */
 
-app.use(
-    function(error, req, res, next) {
+app.post(
+    "/api/posts",
+    function(req, res) {
 
-        console.error(
-            "ERRO DO SERVIDOR:",
-            error
-        );
+        try {
+
+            const userId =
+                cleanUserId(
+                    req.body.userId
+                );
+
+            const image =
+                req.body.image;
+
+            const caption =
+                cleanText(
+                    req.body.caption,
+                    500
+                );
 
 
-        if (
-            error &&
-            error.code === "LIMIT_FILE_SIZE"
-        ) {
+            if (!isImageData(image)) {
 
-            return res.status(413).json({
+                return res.status(400).json({
+
+                    error:
+                        "Imagem inválida."
+
+                });
+
+            }
+
+
+            const post = {
+
+                id:
+                    nextPostId++,
+
+                userId:
+                    userId,
+
+                name:
+                    "Você",
+
+                image:
+                    image,
+
+                caption:
+                    caption,
+
+                likes:
+                    [],
+
+                comments:
+                    [],
+
+                createdAt:
+                    new Date().toISOString()
+
+            };
+
+
+            posts.unshift(
+                post
+            );
+
+
+            return res.status(201).json({
+
+                success:
+                    true,
+
+                post:
+                    preparePost(
+                        post,
+                        userId
+                    )
+
+            });
+
+
+        } catch (error) {
+
+            console.error(
+                "ERRO CRIANDO POST:",
+                error
+            );
+
+
+            return res.status(500).json({
+
                 error:
-                    "A imagem é muito grande. Limite: 10 MB."
+                    "Não foi possível publicar."
+
             });
 
         }
 
+    }
+);
 
-        return res.status(500).json({
 
-            error:
-                error?.message ||
-                "Erro interno do servidor."
+/* =====================================================
+   LISTAR POSTS
+===================================================== */
+
+app.get(
+    "/api/posts",
+    function(req, res) {
+
+        const userId =
+            cleanUserId(
+                req.query.userId
+            );
+
+
+        return res.json({
+
+            success:
+                true,
+
+            posts:
+                posts.map(
+                    function(post) {
+
+                        return preparePost(
+                            post,
+                            userId
+                        );
+
+                    }
+                )
 
         });
 
@@ -532,36 +895,326 @@ app.use(
 
 
 /* =====================================================
-   INICIAR SERVIDOR
+   APAGAR POST
 ===================================================== */
 
-app.listen(
-    PORT,
-    function() {
+app.delete(
+    "/api/posts/:id",
+    function(req, res) {
 
-        console.log(
-            "================================="
+        const id =
+            Number(
+                req.params.id
+            );
+
+        const userId =
+            cleanUserId(
+                req.query.userId ||
+                req.body?.userId
+            );
+
+
+        const index =
+            posts.findIndex(
+                function(post) {
+
+                    return post.id === id;
+
+                }
+            );
+
+
+        if (index === -1) {
+
+            return res.status(404).json({
+
+                error:
+                    "Publicação não encontrada."
+
+            });
+
+        }
+
+
+        if (
+            posts[index].userId !==
+            userId
+        ) {
+
+            return res.status(403).json({
+
+                error:
+                    "Você só pode apagar suas próprias publicações."
+
+            });
+
+        }
+
+
+        posts.splice(
+            index,
+            1
         );
 
-        console.log(
-            "🚀 NovaAI online"
-        );
 
-        console.log(
-            "Porta:",
-            PORT
-        );
+        return res.json({
 
-        console.log(
-            "OpenAI:",
-            OPENAI_API_KEY
-                ? "CONFIGURADA"
-                : "NÃO CONFIGURADA"
-        );
+            success:
+                true
 
-        console.log(
-            "================================="
-        );
+        });
 
     }
 );
+
+
+/* =====================================================
+   CURTIR POST
+===================================================== */
+
+app.post(
+    "/api/posts/:id/like",
+    function(req, res) {
+
+        const id =
+            Number(
+                req.params.id
+            );
+
+        const userId =
+            cleanUserId(
+                req.body.userId
+            );
+
+
+        const post =
+            posts.find(
+                function(item) {
+
+                    return item.id === id;
+
+                }
+            );
+
+
+        if (!post) {
+
+            return res.status(404).json({
+
+                error:
+                    "Publicação não encontrada."
+
+            });
+
+        }
+
+
+        const index =
+            post.likes.indexOf(
+                userId
+            );
+
+
+        let liked;
+
+
+        if (index >= 0) {
+
+            post.likes.splice(
+                index,
+                1
+            );
+
+            liked = false;
+
+        } else {
+
+            post.likes.push(
+                userId
+            );
+
+            liked = true;
+
+        }
+
+
+        return res.json({
+
+            success:
+                true,
+
+            liked:
+                liked,
+
+            likes:
+                post.likes.length
+
+        });
+
+    }
+);
+
+
+/* =====================================================
+   COMENTAR POST
+===================================================== */
+
+app.post(
+    "/api/posts/:id/comments",
+    function(req, res) {
+
+        const id =
+            Number(
+                req.params.id
+            );
+
+        const userId =
+            cleanUserId(
+                req.body.userId
+            );
+
+        const text =
+            cleanText(
+                req.body.text,
+                500
+            );
+
+
+        if (!text) {
+
+            return res.status(400).json({
+
+                error:
+                    "Digite um comentário."
+
+            });
+
+        }
+
+
+        const post =
+            posts.find(
+                function(item) {
+
+                    return item.id === id;
+
+                }
+            );
+
+
+        if (!post) {
+
+            return res.status(404).json({
+
+                error:
+                    "Publicação não encontrada."
+
+            });
+
+        }
+
+
+        const comment =
+            createComment(
+                userId,
+                text
+            );
+
+
+        post.comments.push(
+            comment
+        );
+
+
+        return res.status(201).json({
+
+            success:
+                true,
+
+            comment:
+                comment
+
+        });
+
+    }
+);
+
+
+/* =====================================================
+   CRIAR STATUS
+===================================================== */
+
+app.post(
+    "/api/statuses",
+    function(req, res) {
+
+        try {
+
+            const userId =
+                cleanUserId(
+                    req.body.userId
+                );
+
+            const image =
+                req.body.image;
+
+            const caption =
+                cleanText(
+                    req.body.caption,
+                    300
+                );
+
+
+            if (!isImageData(image)) {
+
+                return res.status(400).json({
+
+                    error:
+                        "Imagem inválida."
+
+                });
+
+            }
+
+
+            const status = {
+
+                id:
+                    nextStatusId++,
+
+                userId:
+                    userId,
+
+                name:
+                    "Você",
+
+                image:
+                    image,
+
+                caption:
+                    caption,
+
+                likes:
+                    [],
+
+                comments:
+                    [],
+
+                createdAt:
+                    new Date().toISOString()
+
+            };
+
+
+            statuses.unshift(
+                status
+            );
+
+
+            return res.status(201).json({
+
+                success:
+                    true,
+
+                status:
+                 
