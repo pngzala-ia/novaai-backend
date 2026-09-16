@@ -1,38 +1,54 @@
 const express = require("express");
 const cors = require("cors");
-const multer = require("multer");
 require("dotenv").config();
 
 const OpenAI = require("openai");
+const { toFile } = require("openai");
 
 const app = express();
 
-/* =========================================================
-   CONFIGURAÇÕES
-========================================================= */
+/* =====================================================
+   CONFIGURAÇÃO
+===================================================== */
 
 const PORT = process.env.PORT || 3000;
-const API_KEY = process.env.OPENAI_API_KEY;
+const apiKey = process.env.OPENAI_API_KEY;
 
-const client = API_KEY
-    ? new OpenAI({
-        apiKey: API_KEY
-    })
-    : null;
+/*
+   A imagem em Base64 pode ser grande.
+   Por isso aumentamos o limite do JSON.
+*/
+app.use(express.json({
+    limit: "25mb"
+}));
 
-/* =========================================================
+app.use(express.urlencoded({
+    extended: true,
+    limit: "25mb"
+}));
+
+
+/* =====================================================
    CORS
-========================================================= */
+===================================================== */
 
 const corsOptions = {
-    origin: function (origin, callback) {
 
-        // Permite file://, Acode, TrebEdit e clientes sem Origin
+    origin: function(origin, callback) {
+
+        /*
+           Permite:
+           - TrebEdit
+           - file://
+           - Preview
+           - navegador
+           - outros frontends
+        */
+
         if (!origin || origin === "null") {
             return callback(null, true);
         }
 
-        // Durante o desenvolvimento aceitamos as origens
         return callback(null, true);
     },
 
@@ -56,100 +72,84 @@ app.use(cors(corsOptions));
 
 app.options("*", cors(corsOptions));
 
-/* =========================================================
-   JSON
-========================================================= */
 
-app.use(express.json({
-    limit: "10mb"
-}));
+/* =====================================================
+   OPENAI
+===================================================== */
 
-/* =========================================================
-   UPLOAD DE IMAGENS
-========================================================= */
+if (!apiKey) {
 
-const upload = multer({
-    storage: multer.memoryStorage(),
+    console.error(
+        "ERRO: OPENAI_API_KEY não foi configurada."
+    );
 
-    limits: {
-        fileSize: 50 * 1024 * 1024
-    },
-
-    fileFilter: function (req, file, callback) {
-
-        const tiposPermitidos = [
-            "image/png",
-            "image/jpeg",
-            "image/webp"
-        ];
-
-        if (!tiposPermitidos.includes(file.mimetype)) {
-
-            return callback(
-                new Error(
-                    "Formato não permitido. Use PNG, JPG ou WEBP."
-                )
-            );
-        }
-
-        callback(null, true);
-    }
-});
-
-/* =========================================================
-   FUNÇÃO PARA TRATAR ERROS DA OPENAI
-========================================================= */
-
-function obterMensagemErro(error) {
-
-    if (!error) {
-        return "Erro desconhecido.";
-    }
-
-    if (error.message) {
-        return error.message;
-    }
-
-    return "Não foi possível completar a solicitação.";
 }
 
-/* =========================================================
-   STATUS
-========================================================= */
+const client = apiKey
+    ? new OpenAI({
+        apiKey: apiKey
+    })
+    : null;
 
-app.get("/", (req, res) => {
+
+/* =====================================================
+   ROTA PRINCIPAL
+===================================================== */
+
+app.get("/", function(req, res) {
 
     res.json({
+
         status: "online",
-        service: "NovaAI",
-        openai: API_KEY ? true : false
+
+        message:
+            "NovaAI Backend está funcionando!",
+
+        openai_key:
+            apiKey
+                ? "configurado"
+                : "não configurado"
+
     });
 
 });
 
-/* =========================================================
-   HEALTH
-========================================================= */
 
-app.get("/health", (req, res) => {
+/* =====================================================
+   HEALTH CHECK
+===================================================== */
+
+app.get("/health", function(req, res) {
 
     res.json({
+
         status: "ok",
+
         service: "NovaAI",
-        openai: !!API_KEY
+
+        openai: !!apiKey
+
     });
 
 });
 
-/* =========================================================
-   CHAT
-========================================================= */
 
-app.post("/api/chat", async (req, res) => {
+/* =====================================================
+   CHAT
+===================================================== */
+
+app.post("/api/chat", async function(req, res) {
 
     try {
 
-        const { message } = req.body || {};
+        const body = req.body || {};
+
+        const message = body.message;
+
+
+        /* ---------------------------------------------
+           VALIDAR MENSAGEM
+        --------------------------------------------- */
 
         if (
             !message ||
@@ -158,39 +158,64 @@ app.post("/api/chat", async (req, res) => {
         ) {
 
             return res.status(400).json({
-                error: "Mensagem vazia."
+
+                error:
+                    "Mensagem vazia."
+
             });
 
         }
 
-        if (!API_KEY || !client) {
+
+        /* ---------------------------------------------
+           VERIFICAR API KEY
+        --------------------------------------------- */
+
+        if (!apiKey || !client) {
 
             return res.status(500).json({
-                error: "OPENAI_API_KEY não configurada no Render."
+
+                error:
+                    "OPENAI_API_KEY não configurada no servidor."
+
             });
 
         }
 
-        const response = await client.responses.create({
 
-            model: "gpt-5-mini",
+        /* ---------------------------------------------
+           CHAMAR NOVAAI
+        --------------------------------------------- */
 
-            input: message.trim()
+        const response =
+            await client.responses.create({
 
-        });
+                model: "gpt-5-mini",
+
+                input:
+                    message.trim()
+
+            });
+
+
+        /* ---------------------------------------------
+           RESPOSTA
+        --------------------------------------------- */
 
         return res.json({
 
             reply:
                 response.output_text ||
-                "Não recebi uma resposta da NovaAI."
+                "Não recebi uma resposta da IA."
 
         });
 
-    } catch (error) {
+    }
+
+    catch(error) {
 
         console.error(
-            "ERRO CHAT:",
+            "Erro NovaAI:",
             error
         );
 
@@ -200,10 +225,14 @@ app.post("/api/chat", async (req, res) => {
         return res.status(status).json({
 
             error:
-                obterMensagemErro(error),
+                error?.message ||
+                "Não foi possível obter uma resposta da IA.",
 
             code:
-                error?.code || null
+                error?.code || null,
+
+            type:
+                error?.type || null
 
         });
 
@@ -211,15 +240,23 @@ app.post("/api/chat", async (req, res) => {
 
 });
 
-/* =========================================================
-   GERAR IMAGEM
-========================================================= */
 
-app.post("/api/image", async (req, res) => {
+/* =====================================================
+   CRIAR IMAGEM
+===================================================== */
+
+app.post("/api/image", async function(req, res) {
 
     try {
 
-        const { prompt } = req.body || {};
+        const body = req.body || {};
+
+        const prompt = body.prompt;
+
+
+        /* ---------------------------------------------
+           VALIDAR PROMPT
+        --------------------------------------------- */
 
         if (
             !prompt ||
@@ -230,127 +267,121 @@ app.post("/api/image", async (req, res) => {
             return res.status(400).json({
 
                 error:
-                    "Descreva a imagem que deseja criar."
+                    "Digite uma descrição para a imagem."
 
             });
 
         }
 
-        if (!API_KEY) {
+
+        /* ---------------------------------------------
+           VERIFICAR API
+        --------------------------------------------- */
+
+        if (!apiKey || !client) {
 
             return res.status(500).json({
 
                 error:
-                    "OPENAI_API_KEY não configurada no Render."
+                    "OPENAI_API_KEY não configurada no servidor."
 
             });
 
         }
+
 
         console.log(
-            "NovaAI: gerando imagem..."
+            "Criando imagem..."
         );
-
-        /*
-         * Usamos o endpoint de imagens diretamente.
-         * Isso evita depender da versão do SDK instalada
-         * para recursos novos de imagem.
-         */
-
-        const response =
-            await fetch(
-                "https://api.openai.com/v1/images/generations",
-                {
-                    method: "POST",
-
-                    headers: {
-                        "Authorization":
-                            `Bearer ${API_KEY}`,
-
-                        "Content-Type":
-                            "application/json"
-                    },
-
-                    body: JSON.stringify({
-
-                        model:
-                            "gpt-image-2",
-
-                        prompt:
-                            prompt.trim(),
-
-                        size:
-                            "1024x1024",
-
-                        quality:
-                            "low",
-
-                        n: 1
-
-                    })
-                }
-            );
-
-        const data =
-            await response.json();
-
-        if (!response.ok) {
-
-            console.error(
-                "ERRO OPENAI IMAGEM:",
-                data
-            );
-
-            return res.status(
-                response.status
-            ).json({
-
-                error:
-                    data?.error?.message ||
-                    "Erro ao gerar imagem."
-
-            });
-
-        }
-
-        const imagem =
-            data?.data?.[0]?.b64_json;
-
-        if (!imagem) {
-
-            return res.status(500).json({
-
-                error:
-                    "A OpenAI não retornou a imagem."
-
-            });
-
-        }
 
         console.log(
-            "NovaAI: imagem criada."
+            "Prompt:",
+            prompt
         );
+
+
+        /* ---------------------------------------------
+           GERAR IMAGEM
+        --------------------------------------------- */
+
+        const result =
+            await client.images.generate({
+
+                model: "gpt-image-1",
+
+                prompt:
+                    prompt.trim(),
+
+                size:
+                    "1024x1024"
+
+            });
+
+
+        /* ---------------------------------------------
+           PEGAR IMAGEM
+        --------------------------------------------- */
+
+        if (
+            !result ||
+            !result.data ||
+            !result.data.length
+        ) {
+
+            throw new Error(
+                "A OpenAI não retornou uma imagem."
+            );
+
+        }
+
+
+        const image =
+            result.data[0];
+
+
+        if (!image.b64_json) {
+
+            throw new Error(
+                "A imagem foi criada, mas não foi retornada em Base64."
+            );
+
+        }
+
+
+        /* ---------------------------------------------
+           RETORNAR PARA O TREBEDIT
+        --------------------------------------------- */
 
         return res.json({
 
-            success: true,
-
             image:
-                `data:image/png;base64,${imagem}`
+                "data:image/png;base64," +
+                image.b64_json
 
         });
 
-    } catch (error) {
+    }
+
+    catch(error) {
 
         console.error(
-            "ERRO GERAR IMAGEM:",
+            "ERRO AO CRIAR IMAGEM:",
             error
         );
 
-        return res.status(500).json({
+        return res.status(
+            error?.status || 500
+        ).json({
 
             error:
-                obterMensagemErro(error)
+                error?.message ||
+                "Erro ao criar imagem.",
+
+            code:
+                error?.code || null,
+
+            type:
+                error?.type || null
 
         });
 
@@ -358,265 +389,490 @@ app.post("/api/image", async (req, res) => {
 
 });
 
-/* =========================================================
+
+/* =====================================================
    EDITAR IMAGEM
-========================================================= */
+===================================================== */
 
-app.post(
-    "/api/image/edit",
-    upload.single("image"),
-    async (req, res) => {
+app.post("/api/image/edit", async function(req, res) {
 
-        try {
+    try {
 
-            if (!API_KEY) {
+        const body = req.body || {};
 
-                return res.status(500).json({
+        const prompt = body.prompt;
 
-                    error:
-                        "OPENAI_API_KEY não configurada no Render."
+        const imageBase64 = body.image;
 
-                });
 
-            }
-
-            if (!req.file) {
-
-                return res.status(400).json({
-
-                    error:
-                        "Nenhuma imagem foi enviada."
-
-                });
-
-            }
-
-            const prompt =
-                req.body?.prompt;
-
-            if (
-                !prompt ||
-                typeof prompt !== "string" ||
-                !prompt.trim()
-            ) {
-
-                return res.status(400).json({
-
-                    error:
-                        "Descreva o que deseja alterar na imagem."
-
-                });
-
-            }
-
-            console.log(
-                "NovaAI: editando imagem..."
-            );
-
-            /*
-             * FormData para enviar a imagem
-             * para a API da OpenAI.
-             */
-
-            const form =
-                new FormData();
-
-            form.append(
-                "model",
-                "gpt-image-2"
-            );
-
-            form.append(
-                "prompt",
-                prompt.trim()
-            );
-
-            form.append(
-                "size",
-                "1024x1024"
-            );
-
-            form.append(
-                "quality",
-                "low"
-            );
-
-            form.append(
-                "image",
-                new Blob(
-                    [
-                        req.file.buffer
-                    ],
-                    {
-                        type:
-                            req.file.mimetype
-                    }
-                ),
-                req.file.originalname
-            );
-
-            const response =
-                await fetch(
-                    "https://api.openai.com/v1/images/edits",
-                    {
-                        method: "POST",
-
-                        headers: {
-
-                            "Authorization":
-                                `Bearer ${API_KEY}`
-
-                        },
-
-                        body: form
-                    }
-                );
-
-            const data =
-                await response.json();
-
-            if (!response.ok) {
-
-                console.error(
-                    "ERRO OPENAI EDIT:",
-                    data
-                );
-
-                return res.status(
-                    response.status
-                ).json({
-
-                    error:
-                        data?.error?.message ||
-                        "Erro ao editar imagem."
-
-                });
-
-            }
-
-            const imagem =
-                data?.data?.[0]?.b64_json;
-
-            if (!imagem) {
-
-                return res.status(500).json({
-
-                    error:
-                        "A OpenAI não retornou a imagem editada."
-
-                });
-
-            }
-
-            console.log(
-                "NovaAI: imagem editada."
-            );
-
-            return res.json({
-
-                success: true,
-
-                image:
-                    `data:image/png;base64,${imagem}`
-
-            });
-
-        } catch (error) {
-
-            console.error(
-                "ERRO EDITAR IMAGEM:",
-                error
-            );
-
-            return res.status(500).json({
-
-                error:
-                    obterMensagemErro(error)
-
-            });
-
-        }
-
-    }
-);
-
-/* =========================================================
-   ERROS DE UPLOAD
-========================================================= */
-
-app.use(
-    (error, req, res, next) => {
+        /* =============================================
+           VALIDAR PROMPT
+        ============================================= */
 
         if (
-            error instanceof multer.MulterError
+            !prompt ||
+            typeof prompt !== "string" ||
+            !prompt.trim()
         ) {
 
             return res.status(400).json({
 
                 error:
-                    "Erro no upload da imagem: " +
-                    error.message
+                    "Diga o que você quer alterar na imagem."
 
             });
 
         }
 
-        if (error) {
+
+        /* =============================================
+           VALIDAR IMAGEM
+        ============================================= */
+
+        if (
+            !imageBase64 ||
+            typeof imageBase64 !== "string"
+        ) {
 
             return res.status(400).json({
 
                 error:
-                    error.message ||
-                    "Erro no servidor."
+                    "Nenhuma imagem foi enviada."
 
             });
 
         }
 
-        next();
+
+        /* =============================================
+           VERIFICAR API KEY
+        ============================================= */
+
+        if (!apiKey || !client) {
+
+            return res.status(500).json({
+
+                error:
+                    "OPENAI_API_KEY não configurada no servidor."
+
+            });
+
+        }
+
+
+        console.log(
+            "Recebida solicitação de edição de imagem."
+        );
+
+        console.log(
+            "Prompt de edição:",
+            prompt
+        );
+
+
+        /* =============================================
+           SEPARAR O BASE64
+        ============================================= */
+
+        let mimeType =
+            "image/jpeg";
+
+        let base64Data =
+            imageBase64;
+
+
+        /*
+           Exemplo recebido:
+
+           data:image/jpeg;base64,/9j/4AAQ...
+
+           Precisamos retirar:
+
+           data:image/jpeg;base64,
+        */
+
+        if (
+            imageBase64.startsWith(
+                "data:"
+            )
+        ) {
+
+            const match =
+                imageBase64.match(
+                    /^data:([^;]+);base64,(.*)$/
+                );
+
+            if (!match) {
+
+                return res.status(400).json({
+
+                    error:
+                        "Formato da imagem inválido."
+
+                });
+
+            }
+
+            mimeType =
+                match[1];
+
+            base64Data =
+                match[2];
+
+        }
+
+
+        /* =============================================
+           VERIFICAR FORMATO
+        ============================================= */
+
+        const allowedTypes = [
+
+            "image/jpeg",
+
+            "image/jpg",
+
+            "image/png",
+
+            "image/webp"
+
+        ];
+
+
+        if (
+            !allowedTypes.includes(
+                mimeType
+            )
+        ) {
+
+            return res.status(400).json({
+
+                error:
+                    "Formato de imagem não suportado. Use JPG, PNG ou WEBP."
+
+            });
+
+        }
+
+
+        /* =============================================
+           CONVERTER BASE64 PARA BUFFER
+        ============================================= */
+
+        let imageBuffer;
+
+        try {
+
+            imageBuffer =
+                Buffer.from(
+                    base64Data,
+                    "base64"
+                );
+
+        }
+
+        catch(error) {
+
+            return res.status(400).json({
+
+                error:
+                    "Não foi possível ler a imagem enviada."
+
+            });
+
+        }
+
+
+        /* =============================================
+           VERIFICAR TAMANHO
+        ============================================= */
+
+        if (
+            !imageBuffer ||
+            imageBuffer.length === 0
+        ) {
+
+            return res.status(400).json({
+
+                error:
+                    "A imagem enviada está vazia."
+
+            });
+
+        }
+
+
+        /*
+           Limite de segurança do nosso backend:
+
+           aproximadamente 20 MB
+        */
+
+        const maxSize =
+            20 * 1024 * 1024;
+
+
+        if (
+            imageBuffer.length >
+            maxSize
+        ) {
+
+            return res.status(413).json({
+
+                error:
+                    "A imagem é muito grande. Use uma imagem de até 20 MB."
+
+            });
+
+        }
+
+
+        console.log(
+            "Imagem recebida:",
+            Math.round(
+                imageBuffer.length / 1024
+            ),
+            "KB"
+        );
+
+
+        /* =============================================
+           DEFINIR EXTENSÃO
+        ============================================= */
+
+        let extension =
+            "jpg";
+
+
+        if (
+            mimeType === "image/png"
+        ) {
+
+            extension =
+                "png";
+
+        }
+
+        else if (
+            mimeType === "image/webp"
+        ) {
+
+            extension =
+                "webp";
+
+        }
+
+
+        const fileName =
+            "imagem-original." +
+            extension;
+
+
+        /* =============================================
+           CONVERTER BUFFER PARA ARQUIVO
+        ============================================= */
+
+        const imageFile =
+            await toFile(
+
+                imageBuffer,
+
+                fileName,
+
+                {
+                    type:
+                        mimeType
+                }
+
+            );
+
+
+        /* =============================================
+           ENVIAR PARA OPENAI
+        ============================================= */
+
+        console.log(
+            "Enviando imagem para edição..."
+        );
+
+
+        const result =
+            await client.images.edit({
+
+                model:
+                    "gpt-image-1",
+
+                image:
+                    imageFile,
+
+                prompt:
+                    prompt.trim(),
+
+                size:
+                    "1024x1024"
+
+            });
+
+
+        /* =============================================
+           VERIFICAR RESPOSTA
+        ============================================= */
+
+        if (
+            !result ||
+            !result.data ||
+            !result.data.length
+        ) {
+
+            throw new Error(
+                "A OpenAI não retornou a imagem editada."
+            );
+
+        }
+
+
+        const editedImage =
+            result.data[0];
+
+
+        if (
+            !editedImage.b64_json
+        ) {
+
+            throw new Error(
+                "A imagem editada não foi retornada em Base64."
+            );
+
+        }
+
+
+        console.log(
+            "Imagem editada com sucesso."
+        );
+
+
+        /* =============================================
+           RETORNAR IMAGEM
+        ============================================= */
+
+        return res.json({
+
+            image:
+                "data:image/png;base64," +
+                editedImage.b64_json
+
+        });
 
     }
-);
 
-/* =========================================================
-   SERVIDOR
-========================================================= */
+    catch(error) {
+
+        console.error(
+            "================================="
+        );
+
+        console.error(
+            "ERRO AO EDITAR IMAGEM"
+        );
+
+        console.error(
+            error
+        );
+
+        console.error(
+            "================================="
+        );
+
+
+        return res.status(
+            error?.status || 500
+        ).json({
+
+            error:
+                error?.message ||
+                "Não foi possível editar a imagem.",
+
+            code:
+                error?.code || null,
+
+            type:
+                error?.type || null
+
+        });
+
+    }
+
+});
+
+
+/* =====================================================
+   TRATAMENTO DE JSON GRANDE
+===================================================== */
+
+app.use(function(err, req, res, next) {
+
+    if (
+        err &&
+        err.type ===
+        "entity.too.large"
+    ) {
+
+        return res.status(413).json({
+
+            error:
+                "A imagem enviada é muito grande."
+
+        });
+
+    }
+
+
+    console.error(
+        "Erro interno:",
+        err
+    );
+
+
+    return res.status(500).json({
+
+        error:
+            "Erro interno no servidor."
+
+    });
+
+});
+
+
+/* =====================================================
+   INICIAR SERVIDOR
+===================================================== */
 
 app.listen(
     PORT,
-    () => {
+    function() {
 
         console.log(
-            "================================"
+            "================================="
         );
 
         console.log(
-            "NovaAI Backend funcionando!"
+            "NovaAI Backend iniciado."
         );
 
         console.log(
-            `Porta: ${PORT}`
+            "Porta:",
+            PORT
         );
 
         console.log(
-            "OpenAI configurada:",
-            API_KEY ? "true" : "false"
+            "OpenAI:",
+            apiKey
+                ? "CONFIGURADA"
+                : "NÃO CONFIGURADA"
         );
 
         console.log(
-            "Chat: /api/chat"
-        );
-
-        console.log(
-            "Imagem: /api/image"
-        );
-
-        console.log(
-            "Editar: /api/image/edit"
-        );
-
-        console.log(
-            "================================"
+            "================================="
         );
 
     }
