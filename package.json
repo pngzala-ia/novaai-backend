@@ -1,7 +1,7 @@
 {
   "name": "novaai-backend",
-  "version": "1.0.0",
-  "description": "Backend da NovaAI integrada à GeraçãoZ",
+  "version": "2.0.0",
+  "description": "Backend da NovaAI para a GeraçãoZ",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
