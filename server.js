@@ -17,12 +17,10 @@ const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 const corsOptions = {
   origin: function (origin, callback) {
-    // O TrebEdit pode enviar Origin: null quando o HTML é aberto como file://
     if (!origin || origin === "null") {
       return callback(null, true);
     }
 
-    // Mantém o acesso dos demais frontends durante o desenvolvimento
     return callback(null, true);
   },
   methods: ["GET", "POST", "DELETE", "OPTIONS"],
@@ -40,8 +38,11 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype && file.mimetype.startsWith("image/")) cb(null, true);
-    else cb(new Error("Envie somente uma imagem."));
+    if (file.mimetype && file.mimetype.startsWith("image/")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Envie somente uma imagem."));
+    }
   }
 });
 
@@ -102,7 +103,7 @@ app.get("/api/health", (req, res) => {
 });
 
 /* =====================================================
-   CHAT
+   CHAT DA NOVAAI
 ===================================================== */
 
 app.post("/api/chat", async (req, res) => {
@@ -113,22 +114,74 @@ app.post("/api/chat", async (req, res) => {
         : "";
 
     if (!message)
-      return res.status(400).json({ error: "Digite uma mensagem." });
+      return res.status(400).json({
+        error: "Digite uma mensagem."
+      });
 
     if (!OPENAI_API_KEY)
       return res.status(500).json({
         error: "OPENAI_API_KEY não configurada no servidor."
       });
 
+    /*
+     * Histórico enviado pelo aplicativo.
+     * Mantemos somente as últimas 20 mensagens.
+     */
+    const rawHistory = Array.isArray(req.body.history)
+      ? req.body.history.slice(-20)
+      : [];
+
+    const history = rawHistory
+      .filter(item =>
+        item &&
+        (item.role === "user" || item.role === "assistant") &&
+        typeof item.content === "string" &&
+        item.content.trim()
+      )
+      .map(item => ({
+        role: item.role,
+        content: item.content.trim()
+      }));
+
+    const projectContext = `
+PROJETO ATUAL:
+Você é a NovaAI integrada ao aplicativo GeraçãoZ.
+
+COMO DEVE ENTENDER O USUÁRIO:
+- Considere o histórico da conversa antes de responder.
+- Quando o usuário disser "isso", "aquilo", "aquele", "aquela", "o anterior",
+  "a versão anterior", "o código que fizemos", "essa parte" ou expressão
+  semelhante, tente identificar a referência pelo contexto da conversa.
+- Não trate cada mensagem como um pedido isolado.
+- Se houver duas interpretações realmente possíveis e o histórico não resolver,
+  faça uma pergunta curta para esclarecer antes de executar.
+- Não invente alterações que o usuário não pediu.
+- Quando o usuário estiver trabalhando no código, preserve o que já funciona
+  e proponha ou faça somente as alterações necessárias.
+- Se o usuário corrigir uma interpretação, use a correção nas mensagens seguintes.
+- Responda em português do Brasil, salvo se o usuário pedir outro idioma.
+- Seja clara, natural e objetiva.
+`;
+
+    /*
+     * O histórico é convertido para um texto explícito.
+     */
+    const conversationContext = history.length
+      ? `
+HISTÓRICO RECENTE DA CONVERSA:
+${history.map(item =>
+  `${item.role === "user" ? "Usuário" : "NovaAI"}: ${item.content}`
+).join("\n")}
+`
+      : "HISTÓRICO RECENTE: nenhuma mensagem anterior disponível.";
+
     const response = await openai.responses.create({
       model: "gpt-5.6-luna",
-      instructions: `
-Você é a NovaAI, assistente oficial da GeraçãoZ.
-Responda em português do Brasil, salvo se o usuário pedir outro idioma.
-Seja natural, útil, clara e objetiva.
-Pedidos de geração ou edição de imagens são tratados pelas rotas específicas.
-      `,
-      input: message
+      instructions: projectContext,
+      input: `${conversationContext}
+
+MENSAGEM ATUAL DO USUÁRIO:
+${message}`
     });
 
     const answer = response.output_text;
@@ -142,10 +195,13 @@ Pedidos de geração ou edição de imagens são tratados pelas rotas específic
       response: answer,
       output_text: answer
     });
+
   } catch (error) {
     console.error("ERRO /api/chat:", error);
+
     res.status(500).json({
-      error: error?.message || "Erro ao conversar com a NovaAI."
+      error: error?.message ||
+        "Erro ao conversar com a NovaAI."
     });
   }
 });
@@ -160,7 +216,8 @@ app.post("/api/image", async (req, res) => {
       typeof req.body.prompt === "string"
         ? req.body.prompt.trim()
         : "";
-if (!prompt)
+
+    if (!prompt)
       return res.status(400).json({
         error: "Informe o que você quer criar."
       });
@@ -170,10 +227,9 @@ if (!prompt)
         error: "OPENAI_API_KEY não configurada no servidor."
       });
 
-    // Limite de 1 a 4 imagens por pedido.
-    // São chamadas independentes à API para que o resultado seja um
-    // conjunto de imagens que o Feed pode publicar como um único carrossel.
-    const requestedCount = Number.parseInt(req.body.count, 10);
+    const requestedCount =
+      Number.parseInt(req.body.count, 10);
+
     const count = Number.isFinite(requestedCount)
       ? Math.min(4, Math.max(1, requestedCount))
       : 1;
@@ -194,7 +250,9 @@ if (!prompt)
       .map(base64 => "data:image/png;base64," + base64);
 
     if (!images.length)
-      throw new Error("A API não retornou os dados das imagens.");
+      throw new Error(
+        "A API não retornou os dados das imagens."
+      );
 
     res.json({
       success: true,
@@ -203,10 +261,13 @@ if (!prompt)
       imageUrl: images[0],
       url: images[0]
     });
+
   } catch (error) {
     console.error("ERRO /api/image:", error);
+
     res.status(500).json({
-      error: error?.message || "Não foi possível gerar a imagem."
+      error: error?.message ||
+        "Não foi possível gerar a imagem."
     });
   }
 });
@@ -228,14 +289,17 @@ app.post("/api/image/edit", upload.single("image"), async (req, res) => {
       });
 
     const prompt =
-      typeof req.body.prompt === "string" && req.body.prompt.trim()
+      typeof req.body.prompt === "string" &&
+      req.body.prompt.trim()
         ? req.body.prompt.trim()
         : "Edite esta imagem de forma criativa.";
 
     const file = new File(
       [req.file.buffer],
       req.file.originalname || "imagem.png",
-      { type: req.file.mimetype || "image/png" }
+      {
+        type: req.file.mimetype || "image/png"
+      }
     );
 
     const result = await openai.images.edit({
@@ -245,12 +309,16 @@ app.post("/api/image/edit", upload.single("image"), async (req, res) => {
       size: "1024x1024"
     });
 
-    const imageData = result?.data?.[0]?.b64_json;
+    const imageData =
+      result?.data?.[0]?.b64_json;
 
     if (!imageData)
-      throw new Error("A API não retornou a imagem editada.");
+      throw new Error(
+        "A API não retornou a imagem editada."
+      );
 
-    const image = "data:image/png;base64," + imageData;
+    const image =
+      "data:image/png;base64," + imageData;
 
     res.json({
       success: true,
@@ -258,10 +326,16 @@ app.post("/api/image/edit", upload.single("image"), async (req, res) => {
       imageUrl: image,
       url: image
     });
+
   } catch (error) {
-    console.error("ERRO /api/image/edit:", error);
+    console.error(
+      "ERRO /api/image/edit:",
+      error
+    );
+
     res.status(500).json({
-      error: error?.message || "Não foi possível editar a imagem."
+      error: error?.message ||
+        "Não foi possível editar a imagem."
     });
   }
 });
@@ -271,13 +345,19 @@ app.post("/api/image/edit", upload.single("image"), async (req, res) => {
 ===================================================== */
 
 app.get("/api/posts", (req, res) => {
-  res.json({ success: true, posts });
+  res.json({
+    success: true,
+    posts
+  });
 });
 
 app.post("/api/posts", (req, res) => {
   const image = req.body.image;
+
   const caption =
-    typeof req.body.caption === "string" ? req.body.caption.trim() : "";
+    typeof req.body.caption === "string"
+      ? req.body.caption.trim()
+      : "";
 
   if (!validImage(image))
     return res.status(400).json({
@@ -285,6 +365,7 @@ app.post("/api/posts", (req, res) => {
     });
 
   const post = createItem(image, caption);
+
   posts.unshift(post);
 
   res.status(201).json({
@@ -294,8 +375,240 @@ app.post("/api/posts", (req, res) => {
 });
 
 app.delete("/api/posts/:id", (req, res) => {
-  const index = posts.findIndex(p => p.id === req.params.id);
+  const index = posts.findIndex(
+    p => p.id === req.params.id
+  );
 
+  if (index < 0)
+    return res.status(404).json({
+      error: "Publicação não encontrada."
+    });
+
+  posts.splice(index, 1);
+
+  res.json({
+    success: true
+  });
+});
+
+app.post("/api/posts/:id/like", (req, res) => {
+  const post = find(
+    posts,
+    req.params.id
+  );
+
+  if (!post)
+    return res.status(404).json({
+      error: "Publicação não encontrada."
+    });
+
+  post.liked = !post.liked;
+
+  post.likes = Math.max(
+    0,
+    post.likes +
+      (post.liked ? 1 : -1)
+  );
+
+  res.json({
+    success: true,
+    liked: post.liked,
+    likes: post.likes
+  });
+});
+
+app.post("/api/posts/:id/comments", (req, res) => {
+  const post = find(
+    posts,
+    req.params.id
+  );
+
+  const text =
+    typeof req.body.text === "string"
+      ? req.body.text.trim()
+      : "";
+
+  if (!post)
+    return res.status(404).json({
+      error: "Publicação não encontrada."
+    });
+
+  if (!text)
+    return res.status(400).json({
+      error: "Digite um comentário."
+    });
+
+  if (text.length > 500)
+    return res.status(400).json({
+      error:
+        "O comentário deve ter no máximo 500 caracteres."
+    });
+
+  const comment = {
+    id: id(),
+    name: "Você",
+    text,
+    createdAt: timeNow()
+  };
+
+  post.comments.push(comment);
+
+  res.status(201).json({
+    success: true,
+    comment
+  });
+});
+// ==============================
+// STATUS
+// ==============================
+
+app.get("/api/status", (req, res) => {
+  res.json(statuses);
+});
+
+app.post("/api/status", (req, res) => {
+  try {
+    const { image, caption } = req.body || {};
+
+    if (!validImage(image)) {
+      return res.status(400).json({
+        error: "Imagem inválida."
+      });
+    }
+
+    const item = createItem(image, caption);
+    statuses.unshift(item);
+
+    res.json(item);
+
+  } catch (error) {
+    console.error("ERRO POST /api/status:", error);
+
+    res.status(500).json({
+      error: "Erro ao publicar status."
+    });
+  }
+});
+
+app.delete("/api/status/:id", (req, res) => {
+  const index = statuses.findIndex(
+    item => String(item.id) === String(req.params.id)
+  );
+
+  if (index === -1) {
+    return res.status(404).json({
+      error: "Status não encontrado."
+    });
+  }
+
+  statuses.splice(index, 1);
+
+  res.json({
+    ok: true
+  });
+});
+
+app.post("/api/status/:id/like", (req, res) => {
+  const item = find(statuses, req.params.id);
+
+  if (!item) {
+    return res.status(404).json({
+      error: "Status não encontrado."
+    });
+  }
+
+  item.liked = !item.liked;
+
+  item.likes = Math.max(
+    0,
+    Number(item.likes || 0) + (item.liked ? 1 : -1)
+  );
+
+  res.json(item);
+});
+
+app.post("/api/status/:id/comments", (req, res) => {
+  const item = find(statuses, req.params.id);
+
+  if (!item) {
+    return res.status(404).json({
+      error: "Status não encontrado."
+    });
+  }
+
+  const text =
+    typeof req.body?.text === "string"
+      ? req.body.text.trim()
+      : "";
+
+  if (!text) {
+    return res.status(400).json({
+      error: "Comentário vazio."
+    });
+  }
+
+  const comment = {
+    id: id(),
+    text,
+    likes: 0,
+    liked: false,
+    createdAt: timeNow()
+  };
+
+  item.comments.push(comment);
+
+  res.json(comment);
+});
+
+
+// ==============================
+// ERRO DE UPLOAD
+// ==============================
+
+app.use((error, req, res, next) => {
+  console.error("ERRO:", error);
+
+  if (error instanceof multer.MulterError) {
+
+    if (error.code === "LIMIT_FILE_SIZE") {
+      return res.status(413).json({
+        error: "A imagem é muito grande. O limite é 10 MB."
+      });
+    }
+
+    return res.status(400).json({
+      error: error.message
+    });
+  }
+
+  if (error) {
+    return res.status(500).json({
+      error: error.message ||
+        "Erro interno do servidor."
+    });
+  }
+
+  next();
+});
+
+
+// ==============================
+// INICIAR SERVIDOR
+// ==============================
+
+app.listen(PORT, () => {
+  console.log("");
+  console.log("====================================");
+  console.log("🚀 NovaAI Backend iniciado");
+  console.log("====================================");
+  console.log(`🌐 Porta: ${PORT}`);
+  console.log(
+    `🔑 OPENAI_API_KEY: ${
+      OPENAI_API_KEY ? "CONFIGURADA" : "NÃO CONFIGURADA"
+    }`
+  );
+  console.log("====================================");
+});
   if (index < 0)
     return res.status(404).json({
       error: "Publicação não encontrada."
@@ -321,7 +634,7 @@ app.post("/api/posts/:id/like", (req, res) => {
     liked: post.liked,
     likes: post.likes
   });
-    });
+});
 
 app.post("/api/posts/:id/comments", (req, res) => {
   const post = find(posts, req.params.id);
