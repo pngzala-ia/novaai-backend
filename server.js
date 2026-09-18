@@ -158,11 +158,15 @@ function timeNow() {
   });
 }
 
-function createItem(image, caption) {
+function createItem(image, caption, userId, userName, username, avatar) {
   return {
     id: id(),
     image,
     caption: caption || "",
+    userId: userId ? String(userId) : "",
+    userName: userName || "",
+    username: username || "",
+    avatar: avatar || "",
     likes: 0,
     liked: false,
     comments: [],
@@ -230,15 +234,14 @@ app.post("/api/auth/register", async (req, res) => {
       "SELECT id FROM users WHERE username = $1 OR email = $2 LIMIT 1",
       [username, email]
     );
-
-    if (exists.rowCount)
+        if (exists.rowCount)
       return res.status(409).json({ error: "Esse @usuário ou e-mail já está cadastrado." });
 
     const passwordHash = await bcrypt.hash(password, 12);
     const userId = crypto.randomUUID();
 
     const result = await db.query(
-              `INSERT INTO users (id, name, username, email, password_hash)
+      `INSERT INTO users (id, name, username, email, password_hash)
        VALUES ($1, $2, $3, $4, $5)
        RETURNING id, name, username, email, avatar, bio, plan, tag, followers_count, following_count, likes_count, posts_count, created_at`,
       [userId, name, username, email, passwordHash]
@@ -247,23 +250,45 @@ app.post("/api/auth/register", async (req, res) => {
     const user = result.rows[0];
     const token = signToken(user);
 
-    res.status(201).json({ success: true, token, user: publicUser(user) });
+    res.status(201).json({
+      success: true,
+      token,
+      user: publicUser(user)
+    });
   } catch (error) {
     console.error("ERRO /api/auth/register:", error);
-    res.status(500).json({ error: "Não foi possível criar a conta." });
+    res.status(500).json({
+      error: "Não foi possível criar a conta."
+    });
   }
 });
 
 app.post("/api/auth/login", async (req, res) => {
   try {
-    if (!db) return res.status(500).json({ error: "Banco de dados não configurado no servidor." });
-    if (!JWT_SECRET) return res.status(500).json({ error: "JWT_SECRET não configurada no servidor." });
+    if (!db)
+      return res.status(500).json({
+        error: "Banco de dados não configurado no servidor."
+      });
 
-    const identifier = typeof req.body.identifier === "string" ? req.body.identifier.trim().toLowerCase() : "";
-    const password = typeof req.body.password === "string" ? req.body.password : "";
+    if (!JWT_SECRET)
+      return res.status(500).json({
+        error: "JWT_SECRET não configurada no servidor."
+      });
+
+    const identifier =
+      typeof req.body.identifier === "string"
+        ? req.body.identifier.trim().toLowerCase()
+        : "";
+
+    const password =
+      typeof req.body.password === "string"
+        ? req.body.password
+        : "";
 
     if (!identifier || !password)
-      return res.status(400).json({ error: "Informe seu @usuário/e-mail e sua senha." });
+      return res.status(400).json({
+        error: "Informe seu @usuário/e-mail e sua senha."
+      });
 
     const result = await db.query(
       "SELECT * FROM users WHERE username = $1 OR email = $1 LIMIT 1",
@@ -271,41 +296,73 @@ app.post("/api/auth/login", async (req, res) => {
     );
 
     if (!result.rowCount)
-      return res.status(401).json({ error: "Usuário/e-mail ou senha incorretos." });
+      return res.status(401).json({
+        error: "Usuário/e-mail ou senha incorretos."
+      });
 
     const user = result.rows[0];
-    const passwordOk = await bcrypt.compare(password, user.password_hash);
+
+    const passwordOk = await bcrypt.compare(
+      password,
+      user.password_hash
+    );
 
     if (!passwordOk)
-      return res.status(401).json({ error: "Usuário/e-mail ou senha incorretos." });
+      return res.status(401).json({
+        error: "Usuário/e-mail ou senha incorretos."
+      });
 
     const token = signToken(user);
-    res.json({ success: true, token, user: publicUser(user) });
+
+    res.json({
+      success: true,
+      token,
+      user: publicUser(user)
+    });
   } catch (error) {
     console.error("ERRO /api/auth/login:", error);
-    res.status(500).json({ error: "Não foi possível entrar na conta." });
+
+    res.status(500).json({
+      error: "Não foi possível entrar na conta."
+    });
   }
 });
 
 app.get("/api/auth/me", authRequired, async (req, res) => {
   try {
-    if (!db) return res.status(500).json({ error: "Banco de dados não configurado no servidor." });
+    if (!db)
+      return res.status(500).json({
+        error: "Banco de dados não configurado no servidor."
+      });
 
     const result = await db.query(
-      `SELECT id, name, username, email, avatar, bio, plan, tag, followers_count, following_count, likes_count, posts_count, created_at
-       FROM users WHERE id = $1 LIMIT 1`,
+      `SELECT id, name, username, email, avatar, bio, plan, tag,
+              followers_count, following_count, likes_count,
+              posts_count, created_at
+       FROM users
+       WHERE id = $1
+       LIMIT 1`,
       [req.auth.sub]
     );
 
     if (!result.rowCount)
-      return res.status(404).json({ error: "Conta não encontrada." });
+      return res.status(404).json({
+        error: "Conta não encontrada."
+      });
 
-    res.json({ success: true, user: publicUser(result.rows[0]) });
+    res.json({
+      success: true,
+      user: publicUser(result.rows[0])
+    });
   } catch (error) {
     console.error("ERRO /api/auth/me:", error);
-    res.status(500).json({ error: "Não foi possível carregar a conta." });
+
+    res.status(500).json({
+      error: "Não foi possível carregar a conta."
+    });
   }
 });
+
 
 /* =====================================================
    CHAT
@@ -319,7 +376,9 @@ app.post("/api/chat", async (req, res) => {
         : "";
 
     if (!message)
-      return res.status(400).json({ error: "Digite uma mensagem." });
+      return res.status(400).json({
+        error: "Digite uma mensagem."
+      });
 
     if (!OPENAI_API_KEY)
       return res.status(500).json({
@@ -350,11 +409,13 @@ Pedidos de geração ou edição de imagens são tratados pelas rotas específic
     });
   } catch (error) {
     console.error("ERRO /api/chat:", error);
+
     res.status(500).json({
       error: error?.message || "Erro ao conversar com a NovaAI."
     });
   }
 });
+
 
 /* =====================================================
    GERAR IMAGEM
@@ -377,31 +438,37 @@ app.post("/api/image", async (req, res) => {
         error: "OPENAI_API_KEY não configurada no servidor."
       });
 
-    // Limite de 1 a 4 imagens por pedido.
-    // São chamadas independentes à API para que o resultado seja um
-    // conjunto de imagens que o Feed pode publicar como um único carrossel.
-    const requestedCount = Number.parseInt(req.body.count, 10);
+    const requestedCount =
+      Number.parseInt(req.body.count, 10);
+
     const count = Number.isFinite(requestedCount)
       ? Math.min(4, Math.max(1, requestedCount))
       : 1;
 
     const results = await Promise.all(
-      Array.from({ length: count }, () =>
-        openai.images.generate({
-          model: "gpt-image-2",
-          prompt,
-          size: "1024x1024"
-        })
+      Array.from(
+        { length: count },
+        () =>
+          openai.images.generate({
+            model: "gpt-image-2",
+            prompt,
+            size: "1024x1024"
+          })
       )
     );
 
     const images = results
       .map(result => result?.data?.[0]?.b64_json)
       .filter(Boolean)
-      .map(base64 => "data:image/png;base64," + base64);
+      .map(
+        base64 =>
+          "data:image/png;base64," + base64
+      );
 
     if (!images.length)
-      throw new Error("A API não retornou os dados das imagens.");
+      throw new Error(
+        "A API não retornou os dados das imagens."
+      );
 
     res.json({
       success: true,
@@ -412,12 +479,164 @@ app.post("/api/image", async (req, res) => {
     });
   } catch (error) {
     console.error("ERRO /api/image:", error);
+
     res.status(500).json({
-      error: error?.message || "Não foi possível gerar a imagem."
+      error:
+        error?.message ||
+        "Não foi possível gerar a imagem."
     });
   }
 });
 
+
+/* =====================================================
+   EDITAR IMAGEM
+===================================================== */
+
+app.post(
+  "/api/image/edit",
+  upload.single("image"),
+  async (req, res) => {
+    try {
+      if (!req.file)
+        return res.status(400).json({
+          error: "Nenhuma imagem foi enviada."
+        });
+
+      if (!OPENAI_API_KEY)
+        return res.status(500).json({
+          error:
+            "OPENAI_API_KEY não configurada no servidor."
+        });
+
+      const prompt =
+        typeof req.body.prompt === "string" &&
+        req.body.prompt.trim()
+          ? req.body.prompt.trim()
+          : "Edite esta imagem de forma criativa.";
+
+      const file = new File(
+        [req.file.buffer],
+        req.file.originalname || "imagem.png",
+        {
+          type:
+            req.file.mimetype ||
+            "image/png"
+        }
+      );
+
+      const result =
+        await openai.images.edit({
+          model: "gpt-image-2",
+          image: file,
+          prompt,
+          size: "1024x1024"
+        });
+
+      const imageData =
+        result?.data?.[0]?.b64_json;
+
+      if (!imageData)
+        throw new Error(
+          "A API não retornou a imagem editada."
+        );
+
+      const image =
+        "data:image/png;base64," +
+        imageData;
+
+      res.json({
+        success: true,
+        image,
+        imageUrl: image,
+        url: image
+      });
+    } catch (error) {
+      console.error(
+        "ERRO /api/image/edit:",
+        error
+      );
+
+      res.status(500).json({
+        error:
+          error?.message ||
+          "Não foi possível editar a imagem."
+      });
+    }
+  }
+);
+
+
+/* =====================================================
+   POSTS / FEED
+===================================================== */
+
+app.get("/api/posts", (req, res) => {
+  res.json({
+    success: true,
+    posts
+  });
+});
+
+app.post("/api/posts", authRequired, async (req, res) => {
+  try {
+    const image = req.body.image;
+
+    const caption =
+      typeof req.body.caption === "string"
+        ? req.body.caption.trim()
+        : "";
+
+    if (!validImage(image))
+      return res.status(400).json({
+        error: "Nenhuma imagem válida foi enviada."
+      });
+
+    if (!db)
+      return res.status(500).json({
+        error: "Banco de dados não configurado."
+      });
+
+    const userResult = await db.query(
+      `SELECT id, name, username, avatar
+       FROM users
+       WHERE id = $1
+       LIMIT 1`,
+      [req.auth.sub]
+    );
+
+    if (!userResult.rowCount)
+      return res.status(404).json({
+        error: "Conta não encontrada."
+      });
+
+    const user = userResult.rows[0];
+
+    const post = createItem(
+      image,
+      caption,
+      user.id,
+      user.name,
+      "@" + user.username,
+      user.avatar || ""
+    );
+
+    posts.unshift(post);
+
+    res.status(201).json({
+      success: true,
+      post
+    });
+  } catch (error) {
+    console.error("ERRO /api/posts:", error);
+
+    res.status(500).json({
+      error:
+        error?.message ||
+        "Não foi possível publicar."
+    });
+  }
+});
 /* =====================================================
    EDITAR IMAGEM
 ===================================================== */
@@ -478,7 +697,7 @@ app.post("/api/image/edit", upload.single("image"), async (req, res) => {
 ===================================================== */
 
 app.get("/api/posts", (req, res) => {
-      res.json({ success: true, posts });
+  res.json({ success: true, posts });
 });
 
 app.post("/api/posts", (req, res) => {
@@ -491,7 +710,15 @@ app.post("/api/posts", (req, res) => {
       error: "Nenhuma imagem válida foi enviada."
     });
 
-  const post = createItem(image, caption);
+  const post = createItem(
+    image,
+    caption,
+    req.body.userId,
+    req.body.userName,
+    req.body.username,
+    req.body.avatar
+  );
+
   posts.unshift(post);
 
   res.status(201).json({
@@ -509,6 +736,7 @@ app.delete("/api/posts/:id", (req, res) => {
     });
 
   posts.splice(index, 1);
+
   res.json({ success: true });
 });
 
@@ -521,7 +749,10 @@ app.post("/api/posts/:id/like", (req, res) => {
     });
 
   post.liked = !post.liked;
-  post.likes = Math.max(0, post.likes + (post.liked ? 1 : -1));
+  post.likes = Math.max(
+    0,
+    post.likes + (post.liked ? 1 : -1)
+  );
 
   res.json({
     success: true,
@@ -532,8 +763,11 @@ app.post("/api/posts/:id/like", (req, res) => {
 
 app.post("/api/posts/:id/comments", (req, res) => {
   const post = find(posts, req.params.id);
+
   const text =
-    typeof req.body.text === "string" ? req.body.text.trim() : "";
+    typeof req.body.text === "string"
+      ? req.body.text.trim()
+      : "";
 
   if (!post)
     return res.status(404).json({
@@ -552,8 +786,21 @@ app.post("/api/posts/:id/comments", (req, res) => {
 
   const comment = {
     id: id(),
-    name: "Você",
+
+    userId: req.body.userId
+      ? String(req.body.userId)
+      : "",
+
+    name: req.body.userName || "Você",
+
+    userName: req.body.userName || "Você",
+
+    username: req.body.username || "@voce",
+
+    avatar: req.body.avatar || "",
+
     text,
+
     createdAt: timeNow()
   };
 
@@ -570,20 +817,34 @@ app.post("/api/posts/:id/comments", (req, res) => {
 ===================================================== */
 
 app.get("/api/status", (req, res) => {
-  res.json({ success: true, statuses });
+  res.json({
+    success: true,
+    statuses
+  });
 });
 
 app.post("/api/status", (req, res) => {
   const image = req.body.image;
+
   const caption =
-    typeof req.body.caption === "string" ? req.body.caption.trim() : "";
+    typeof req.body.caption === "string"
+      ? req.body.caption.trim()
+      : "";
 
   if (!validImage(image))
     return res.status(400).json({
       error: "Nenhuma imagem válida foi enviada."
     });
 
-  const status = createItem(image, caption);
+  const status = createItem(
+    image,
+    caption,
+    req.body.userId,
+    req.body.userName,
+    req.body.username,
+    req.body.avatar
+  );
+
   statuses.unshift(status);
 
   res.status(201).json({
@@ -593,7 +854,9 @@ app.post("/api/status", (req, res) => {
 });
 
 app.delete("/api/status/:id", (req, res) => {
-  const index = statuses.findIndex(s => s.id === req.params.id);
+  const index = statuses.findIndex(
+    s => s.id === req.params.id
+  );
 
   if (index < 0)
     return res.status(404).json({
@@ -601,7 +864,10 @@ app.delete("/api/status/:id", (req, res) => {
     });
 
   statuses.splice(index, 1);
-  res.json({ success: true });
+
+  res.json({
+    success: true
+  });
 });
 
 app.post("/api/status/:id/like", (req, res) => {
@@ -613,7 +879,11 @@ app.post("/api/status/:id/like", (req, res) => {
     });
 
   status.liked = !status.liked;
-  status.likes = Math.max(0, status.likes + (status.liked ? 1 : -1));
+
+  status.likes = Math.max(
+    0,
+    status.likes + (status.liked ? 1 : -1)
+  );
 
   res.json({
     success: true,
@@ -624,8 +894,11 @@ app.post("/api/status/:id/like", (req, res) => {
 
 app.post("/api/status/:id/comments", (req, res) => {
   const status = find(statuses, req.params.id);
+
   const text =
-    typeof req.body.text === "string" ? req.body.text.trim() : "";
+    typeof req.body.text === "string"
+      ? req.body.text.trim()
+      : "";
 
   if (!status)
     return res.status(404).json({
@@ -644,8 +917,21 @@ app.post("/api/status/:id/comments", (req, res) => {
 
   const comment = {
     id: id(),
-    name: "Você",
+
+    userId: req.body.userId
+      ? String(req.body.userId)
+      : "",
+
+    name: req.body.userName || "Você",
+
+    userName: req.body.userName || "Você",
+
+    username: req.body.username || "@voce",
+
+    avatar: req.body.avatar || "",
+
     text,
+
     createdAt: timeNow()
   };
 
@@ -671,7 +957,9 @@ app.use((error, req, res, next) => {
   }
 
   res.status(500).json({
-    error: error?.message || "Erro interno do servidor."
+    error:
+      error?.message ||
+      "Erro interno do servidor."
   });
 });
 
@@ -679,22 +967,64 @@ async function startServer() {
   try {
     await initDatabase();
   } catch (error) {
-    console.error("❌ ERRO AO INICIALIZAR O BANCO:", error);
+    console.error(
+      "❌ ERRO AO INICIALIZAR O BANCO:",
+      error
+    );
+
     process.exit(1);
   }
 
   app.listen(PORT, () => {
     console.log("=================================");
-    console.log("🚀 NovaAI + GeraçãoZ online");
-    console.log("Porta:", PORT);
-    console.log("OpenAI:", OPENAI_API_KEY ? "CONFIGURADA" : "NÃO CONFIGURADA");
-    console.log("Banco:", db ? "CONFIGURADO" : "NÃO CONFIGURADO");
-    console.log("Contas: ATIVAS");
-    console.log("Feed: ATIVO");
-    console.log("Status: ATIVO");
-    console.log("Curtidas: ATIVAS");
-    console.log("Comentários: ATIVOS");
-    console.log("Excluir: ATIVO");
+
+    console.log(
+      "🚀 NovaAI + GeraçãoZ online"
+    );
+
+    console.log(
+      "Porta:",
+      PORT
+    );
+
+    console.log(
+      "OpenAI:",
+      OPENAI_API_KEY
+        ? "CONFIGURADA"
+        : "NÃO CONFIGURADA"
+    );
+
+    console.log(
+      "Banco:",
+      db
+        ? "CONFIGURADO"
+        : "NÃO CONFIGURADO"
+    );
+
+    console.log(
+      "Contas: ATIVAS"
+    );
+
+    console.log(
+      "Feed: ATIVO"
+    );
+
+    console.log(
+      "Status: ATIVO"
+    );
+
+    console.log(
+      "Curtidas: ATIVAS"
+    );
+
+    console.log(
+      "Comentários: ATIVOS"
+    );
+
+    console.log(
+      "Excluir: ATIVO"
+    );
+
     console.log("=================================");
   });
 }
