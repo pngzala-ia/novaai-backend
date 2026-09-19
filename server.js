@@ -241,7 +241,6 @@ function timeNow() {
     }
   );
 }
-
 function createItem(
   image,
   caption,
@@ -259,10 +258,50 @@ function createItem(
 
     userId: userId
       ? String(userId)
-     /* =====================================================
+      : "",
+
+    userName:
+      userName || "Usuário",
+
+    username:
+      username || "@usuario",
+
+    avatar:
+      avatar || "",
+
+    likes: 0,
+
+    liked: false,
+
+    comments: [],
+
+    createdAt: timeNow()
+  };
+}
+
+function validImage(value) {
+  return (
+    typeof value === "string" &&
+    (
+      value.startsWith("data:image/") ||
+      value.startsWith("https://") ||
+      value.startsWith("http://")
+    )
+  );
+}
+
+function find(list, itemId) {
+  return list.find(
+    item =>
+      String(item.id) ===
+      String(itemId)
+  );
+}
+
+
+/* =====================================================
    CONTAS / AUTENTICAÇÃO
 ===================================================== */
-
 app.post("/api/auth/register", async (req, res) => {
   try {
     if (!db) {
