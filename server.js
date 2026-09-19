@@ -163,7 +163,7 @@ const corsOptions = {
     // Mantém o acesso dos demais frontends durante o desenvolvimento
     return callback(null, true);
   },
-  methods: ["GET", "POST", "DELETE", "OPTIONS"],
+  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
   allowedHeaders: ["Content-Type", "Authorization"],
   credentials: false,
   optionsSuccessStatus: 204
