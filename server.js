@@ -6308,7 +6308,45 @@ app.use(
 
   }
 );
+// ==========================================
+// TESTE TEMPORÁRIO DO SMTP
+// ==========================================
 
+app.get("/api/test-smtp", async (req, res) => {
+  if (!mailer) {
+    return res.status(500).json({
+      ok: false,
+      error: "SMTP não está configurado."
+    });
+  }
+
+  try {
+    await mailer.verify();
+
+    const info = await mailer.sendMail({
+      from: SMTP_FROM,
+      to: SMTP_USER,
+      subject: "Teste SMTP — GeraçãoZ",
+      text: "Se você recebeu este e-mail, o SMTP da GeraçãoZ está funcionando corretamente."
+    });
+
+    console.log("✅ TESTE SMTP OK:", info.messageId);
+
+    res.json({
+      ok: true,
+      message: "SMTP funcionando e e-mail enviado.",
+      messageId: info.messageId
+    });
+
+  } catch (error) {
+    console.error("❌ TESTE SMTP ERRO:", error);
+
+    res.status(500).json({
+      ok: false,
+      error: error.message || "Erro desconhecido no SMTP"
+    });
+  }
+});
 
 /* =====================================================
    INICIAR SERVIDOR
