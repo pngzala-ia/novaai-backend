@@ -4018,12 +4018,51 @@ app.get(
       }
 
 
-      res.json({
+      const userId = req.auth?.sub || null;
 
-        posts:
-          visiblePosts
+const likeRows = await db.query(
+    `
+    SELECT
+        post_id,
+        COUNT(*)::int AS likes
+    FROM post_likes
+    GROUP BY post_id
+    `
+);
 
-      });
+const userLikeRows = userId
+    ? await db.query(
+        `
+        SELECT post_id
+        FROM post_likes
+        WHERE user_id = $1
+        `,
+        [userId]
+    )
+    : { rows: [] };
+
+const likeCounts = new Map(
+    likeRows.rows.map(row => [
+        String(row.post_id),
+        Number(row.likes || 0)
+    ])
+);
+
+const likedPosts = new Set(
+    userLikeRows.rows.map(row =>
+        String(row.post_id)
+    )
+);
+
+const postsWithLikes = visiblePosts.map(post => ({
+    ...post,
+    likes: likeCounts.get(String(post.id)) || 0,
+    liked: likedPosts.has(String(post.id))
+}));
+
+res.json({
+    posts: postsWithLikes
+});
 
     } catch (error) {
 
