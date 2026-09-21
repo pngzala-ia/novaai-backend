@@ -4047,122 +4047,166 @@ app.get(
    CURTIR POST
 ===================================================== */
 
-app.post(
-  "/api/posts/:id/like",
-  authRequired,
-  async (req, res) => {
+app.post("/api/posts/:id/like", async (req, res) => {
+  try {
+    const postId = String(req.params.id || "").trim();
+    const userId = String(req.body.userId || "").trim();
 
-    try {
-
-      const post =
-        find(
-          posts,
-          req.params.id
-        );
-
-
-      if (!post) {
-
-        return res.status(404).json({
-          error:
-            "Publicação não encontrada."
-        });
-
-      }
-
-
-      const existing =
-        await db.query(
-
-          `SELECT 1
-
-           FROM post_likes
-
-           WHERE post_id = $1
-
-           AND user_id = $2
-
-           LIMIT 1`,
-
-          [
-            post.id,
-            req.auth.sub
-          ]
-
-        );
-
-
-      if (existing.rowCount) {
-
-        return res.json({
-
-          liked:
-            true,
-
-          likes:
-            post.likes
-
-        });
-
-      }
-
-
-      await db.query(
-
-        `INSERT INTO post_likes
-          (
-            post_id,
-            user_id
-          )
-
-         VALUES
-          ($1, $2)
-
-         ON CONFLICT DO NOTHING`,
-
-        [
-          post.id,
-          req.auth.sub
-        ]
-
-      );
-
-
-      post.likes =
-        Number(post.likes || 0) + 1;
-
-
-      post.liked =
-        true;
-
-
-      res.json({
-
-        liked:
-          true,
-
-        likes:
-          post.likes
-
+    if (!postId) {
+      return res.status(400).json({
+        error: "Publicação não identificada."
       });
-
-    } catch (error) {
-
-      console.error(
-        "ERRO /like:",
-        error
-      );
-
-      res.status(500).json({
-        error:
-          "Não foi possível curtir."
-      });
-
     }
 
-  }
-);
+    if (!userId) {
+      return res.status(400).json({
+        error: "Usuário não identificado."
+      });
+    }
 
+    if (!db) {
+      return res.status(500).json({
+        error: "Banco de dados não configurado."
+      });
+    }
+
+    /*
+     * A publicação pode estar na memória com o mesmo ID.
+     * Não usamos isso como condição obrigatória para a curtida.
+     */
+    const post = posts.find(
+      p => String(p.id) === postId
+    );
+
+    /*
+     * Verifica se este usuário já curtiu.
+     */
+    const existing = await db.query(
+      `
+      SELECT 1
+      FROM post_likes
+      WHERE post_id = $1
+        AND user_id = $2
+      LIMIT 1
+      `,
+      [postId, userId]
+    );
+
+    let liked;
+
+    if (existing.rowCount > 0) {
+
+      await db.query(
+        `
+        DELETE FROM post_likes
+        WHERE post_id = $1
+          AND user_id = $2
+        `,
+        [postId, userId]
+      );
+
+      liked = false;
+
+    } else {
+
+      await db.query(
+        `
+        INSERT INTO post_likes
+          (post_id, user_id)
+        VALUES
+          ($1, $2)
+        ON CONFLICT DO NOTHING
+        `,
+        [postId, userId]
+      );
+
+      liked = true;
+    }
+
+    /*
+     * Conta novamente as curtidas.
+     */
+    const count = await db.query(
+      `
+      SELECT COUNT(*)::int AS likes
+      FROM post_likes
+      WHERE post_id = $1
+      `,
+      [postId]
+    );
+
+    const likes = Number(
+      count.rows[0]?.likes || 0
+    );
+
+    /*
+     * Atualiza a publicação em memória,
+     * caso ela esteja disponível.
+     */
+    if (post) {
+      post.likes = likes;
+      post.liked = liked;
+    }
+
+    /*
+     * Notificação para o dono da publicação.
+     */
+    if (
+      liked &&
+      post &&
+      post.userId &&
+      String(post.userId) !== userId
+    ) {
+      try {
+
+        const actor = await db.query(
+          `
+          SELECT name
+          FROM users
+          WHERE id = $1
+          LIMIT 1
+          `,
+          [userId]
+        );
+
+        const actorName =
+          actor.rows[0]?.name || "Alguém";
+
+        await createAccountNotification(
+          post.userId,
+          userId,
+          "like",
+          actorName + " curtiu sua publicação",
+          "Toque para abrir a publicação.",
+          postId
+        );
+
+      } catch (notificationError) {
+        console.error(
+          "ERRO AO CRIAR NOTIFICAÇÃO DE CURTIDA:",
+          notificationError
+        );
+      }
+    }
+
+    return res.json({
+      success: true,
+      liked,
+      likes
+    });
+
+  } catch (error) {
+
+    console.error(
+      "ERRO /api/posts/:id/like:",
+      error
+    );
+
+    return res.status(500).json({
+      error: "Não foi possível alterar a curtida."
+    });
+  }
+});
 
 /* =====================================================
    DESCURTIR POST
