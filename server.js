@@ -796,7 +796,8 @@ app.post("/api/posts/:id/like", async (req, res) => {
   }
 });
 
-  try {
+app.post("/api/posts/:postId/comments/:commentId/like", async (req, res) => {
+    try {
     const post = find(posts, req.params.postId);
     const comment = post?.comments?.find(
       c => String(c.id) === String(req.params.commentId)
@@ -1161,7 +1162,6 @@ app.post("/api/status/:id/comments", (req, res) => {
     comment
   });
 });
-app.post("/api/posts/:postId/comments/:commentId/like", async (req, res) => {
 async function createAccountNotification(
   recipientId,
   actorId,
