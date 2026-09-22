@@ -4492,6 +4492,161 @@ app.post(
   }
 );
 /* =====================================================
+   EXCLUIR COMENTÁRIO
+===================================================== */
+
+app.delete(
+  "/api/posts/:postId/comments/:commentId",
+  authRequired,
+  async (req, res) => {
+
+    try {
+
+      const post =
+        find(
+          posts,
+          req.params.postId
+        );
+
+
+      if (!post) {
+
+        return res.status(404).json({
+          error:
+            "Publicação não encontrada."
+        });
+
+      }
+
+
+      const commentIndex =
+        (post.comments || []).findIndex(
+          comment =>
+            String(comment.id) ===
+            String(req.params.commentId)
+        );
+
+
+      if (commentIndex < 0) {
+
+        return res.status(404).json({
+          error:
+            "Comentário não encontrado."
+        });
+
+      }
+
+
+      const comment =
+        post.comments[commentIndex];
+
+
+      const currentUserId =
+        String(req.auth.sub);
+
+
+      const postOwnerId =
+        String(post.userId || "");
+
+
+      const commentOwnerId =
+        String(comment.userId || "");
+
+
+      /*
+       * Pode apagar:
+       *
+       * 1. Dono da publicação
+       * 2. Dono do comentário
+       *
+       * Qualquer outro usuário não pode.
+       */
+
+      const isPostOwner =
+        currentUserId ===
+        postOwnerId;
+
+
+      const isCommentOwner =
+        currentUserId ===
+        commentOwnerId;
+
+
+      if (
+        !isPostOwner &&
+        !isCommentOwner
+      ) {
+
+        return res.status(403).json({
+          error:
+            "Você não pode apagar este comentário."
+        });
+
+      }
+
+
+      /*
+       * Remove o comentário.
+       */
+
+      post.comments.splice(
+        commentIndex,
+        1
+      );
+
+
+      /*
+       * Remove também as curtidas
+       * desse comentário, caso existam
+       * na tabela.
+       */
+
+      if (db) {
+
+        await db.query(
+
+          `DELETE FROM comment_likes
+           WHERE comment_id = $1`,
+
+          [
+            req.params.commentId
+          ]
+
+        );
+
+      }
+
+
+      res.json({
+
+        success:
+          true,
+
+        deletedCommentId:
+          req.params.commentId
+
+      });
+
+    } catch (error) {
+
+      console.error(
+        "ERRO /comments DELETE:",
+        error
+      );
+
+
+      res.status(500).json({
+
+        error:
+          "Não foi possível apagar o comentário."
+
+      });
+
+    }
+
+  }
+);
+/* =====================================================
    EXCLUIR PUBLICAÇÃO
 ===================================================== */
 
