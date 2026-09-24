@@ -31,21 +31,6 @@ async function initDatabase() {
   if (!db) return;
 
   await db.query(`
-    CREATE TABLE IF NOT EXISTS posts (
-      id TEXT PRIMARY KEY,
-      image TEXT NOT NULL,
-      caption TEXT NOT NULL DEFAULT '',
-      user_id TEXT NOT NULL DEFAULT '',
-      user_name TEXT NOT NULL DEFAULT '',
-      username TEXT NOT NULL DEFAULT '',
-      avatar TEXT NOT NULL DEFAULT '',
-      comments JSONB NOT NULL DEFAULT '[]'::jsonb,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    CREATE INDEX IF NOT EXISTS posts_created_at_idx
-      ON posts(created_at DESC);
-
     CREATE TABLE IF NOT EXISTS post_likes (
       post_id TEXT NOT NULL,
       user_id TEXT NOT NULL,
@@ -80,6 +65,17 @@ async function initDatabase() {
 
     ALTER TABLE users ADD COLUMN IF NOT EXISTS is_private BOOLEAN NOT NULL DEFAULT FALSE;
 
+    CREATE TABLE IF NOT EXISTS follows (
+      follower_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      following_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (follower_id, following_id),
+      CHECK (follower_id <> following_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS follows_following_idx
+      ON follows(following_id, created_at DESC);
+
     CREATE TABLE IF NOT EXISTS direct_messages (
       id UUID PRIMARY KEY,
       sender_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -107,33 +103,8 @@ async function initDatabase() {
       ON notifications(recipient_id, created_at DESC);
   `);
 
-  const savedPosts = await db.query(`
-    SELECT id, image, caption, user_id, user_name, username, avatar, comments, created_at
-    FROM posts
-    ORDER BY created_at DESC
-  `);
-
-  posts.splice(
-    0,
-    posts.length,
-    ...savedPosts.rows.map(row => ({
-      id: String(row.id),
-      image: row.image,
-      caption: row.caption || "",
-      userId: row.user_id ? String(row.user_id) : "",
-      userName: row.user_name || "",
-      username: row.username || "",
-      avatar: row.avatar || "",
-      likes: 0,
-      liked: false,
-      comments: Array.isArray(row.comments) ? row.comments : [],
-      createdAt: row.created_at ? new Date(row.created_at).toISOString() : timeNow()
-    }))
-  );
-
-  console.log(`📦 Publicações carregadas do PostgreSQL: ${posts.length}`);
+  console.log("✅ Banco de dados de contas pronto.");
 }
-
 
 function normalizeUsername(value) {
   return String(value || "")
@@ -165,6 +136,34 @@ function publicUser(user) {
   };
 }
 
+async function getFollowState(viewerId, targetId) {
+  if (!db || !viewerId || !targetId || String(viewerId) === String(targetId)) {
+    return { following: false, followsYou: false, mutual: true };
+  }
+
+  const result = await db.query(
+    `SELECT
+      EXISTS(SELECT 1 FROM follows WHERE follower_id=$1 AND following_id=$2) AS following,
+      EXISTS(SELECT 1 FROM follows WHERE follower_id=$2 AND following_id=$1) AS follows_you`,
+    [viewerId, targetId]
+  );
+
+  const row = result.rows[0] || {};
+
+  return {
+    following: !!row.following,
+    followsYou: !!row.follows_you,
+    mutual: !!row.following && !!row.follows_you
+  };
+}
+
+async function canViewPrivateProfile(viewerId, targetUser) {
+  if (!targetUser?.is_private) return true;
+  if (viewerId && String(viewerId) === String(targetUser.id)) return true;
+  const state = await getFollowState(viewerId, targetUser.id);
+  return state.mutual;
+}
+
 function signToken(user) {
   if (!JWT_SECRET) throw new Error("JWT_SECRET não configurada no servidor.");
   return jwt.sign(
@@ -194,7 +193,6 @@ function authRequired(req, res, next) {
   }
 }
 
-
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
 const corsOptions = {
@@ -218,7 +216,7 @@ app.use(express.json({ limit: "12mb" }));
 
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 },
+    limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (file.mimetype && file.mimetype.startsWith("image/")) cb(null, true);
     else cb(new Error("Envie somente uma imagem."));
@@ -289,6 +287,7 @@ app.get("/api/health", (req, res) => {
 /* =====================================================
    CONTAS / AUTENTICAÇÃO
 ===================================================== */
+
 app.post("/api/auth/register", async (req, res) => {
   try {
     if (!db) return res.status(500).json({ error: "Banco de dados não configurado no servidor." });
@@ -325,14 +324,17 @@ app.post("/api/auth/register", async (req, res) => {
     const result = await db.query(
       `INSERT INTO users (id, name, username, email, password_hash)
        VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, name, username, email, avatar, bio, plan, tag, followers_count, following_count, likes_count, posts_count, created_at`,
+       RETURNING *`,
       [userId, name, username, email, passwordHash]
     );
 
     const user = result.rows[0];
-    const token = signToken(user);
 
-    res.status(201).json({ success: true, token, user: publicUser(user) });
+    res.status(201).json({
+      success: true,
+      token: signToken(user),
+      user: publicUser(user)
+    });
   } catch (error) {
     console.error("ERRO /api/auth/register:", error);
     res.status(500).json({ error: "Não foi possível criar a conta." });
@@ -344,538 +346,759 @@ app.post("/api/auth/login", async (req, res) => {
     if (!db) return res.status(500).json({ error: "Banco de dados não configurado no servidor." });
     if (!JWT_SECRET) return res.status(500).json({ error: "JWT_SECRET não configurada no servidor." });
 
-    const identifier = typeof req.body.identifier === "string" ? req.body.identifier.trim().toLowerCase() : "";
-    const password = typeof req.body.password === "string" ? req.body.password : "";
+    const identifier =
+      typeof req.body.identifier === "string"
+        ? req.body.identifier.trim().toLowerCase()
+        : "";
 
-    if (!identifier || !password)
-      return res.status(400).json({ error: "Informe seu @usuário/e-mail e sua senha." });
+    const password =
+      typeof req.body.password === "string"
+        ? req.body.password
+        : "";
+
+    if (!identifier || !password) {
+      return res.status(400).json({
+        error: "Informe usuário/e-mail e senha."
+      });
+    }
 
     const result = await db.query(
-      "SELECT * FROM users WHERE username = $1 OR email = $1 LIMIT 1",
+      `SELECT *
+       FROM users
+       WHERE LOWER(username)=LOWER($1)
+          OR LOWER(email)=LOWER($1)
+       LIMIT 1`,
       [identifier.replace(/^@+/, "")]
     );
 
-    if (!result.rowCount)
-      return res.status(401).json({ error: "Usuário/e-mail ou senha incorretos." });
+    if (!result.rowCount) {
+      return res.status(401).json({
+        error: "Usuário/e-mail ou senha incorretos."
+      });
+    }
 
     const user = result.rows[0];
-    const passwordOk = await bcrypt.compare(password, user.password_hash);
+    const validPassword = await bcrypt.compare(password, user.password_hash);
 
-    if (!passwordOk)
-      return res.status(401).json({ error: "Usuário/e-mail ou senha incorretos." });
+    if (!validPassword) {
+      return res.status(401).json({
+        error: "Usuário/e-mail ou senha incorretos."
+      });
+    }
 
-    const token = signToken(user);
-    res.json({ success: true, token, user: publicUser(user) });
+    res.json({
+      success: true,
+      token: signToken(user),
+      user: publicUser(user)
+    });
   } catch (error) {
     console.error("ERRO /api/auth/login:", error);
-    res.status(500).json({ error: "Não foi possível entrar na conta." });
+    res.status(500).json({
+      error: "Não foi possível fazer login."
+    });
   }
 });
-
 app.get("/api/auth/me", authRequired, async (req, res) => {
   try {
-    if (!db) return res.status(500).json({ error: "Banco de dados não configurado no servidor." });
+    if (!db) {
+      return res.status(500).json({
+        error: "Banco de dados não configurado."
+      });
+    }
 
     const result = await db.query(
-      `SELECT id, name, username, email, avatar, bio, plan, tag, is_private, followers_count, following_count, likes_count, posts_count, created_at
-       FROM users WHERE id = $1 LIMIT 1`,
+      "SELECT * FROM users WHERE id=$1 LIMIT 1",
       [req.auth.sub]
     );
 
-    if (!result.rowCount)
-      return res.status(404).json({ error: "Conta não encontrada." });
+    if (!result.rowCount) {
+      return res.status(404).json({
+        error: "Conta não encontrada."
+      });
+    }
 
-    res.json({ success: true, user: publicUser(result.rows[0]) });
+    res.json({
+      success: true,
+      user: publicUser(result.rows[0])
+    });
   } catch (error) {
     console.error("ERRO /api/auth/me:", error);
-    res.status(500).json({ error: "Não foi possível carregar a conta." });
+    res.status(500).json({
+      error: "Não foi possível carregar a conta."
+    });
   }
 });
-
-/* =====================================================
-   CHAT
-===================================================== */
 
 app.get("/api/users/:id", async (req, res) => {
   try {
-    if (!db) return res.status(500).json({ error: "Banco de dados não configurado no servidor." });
-    const id = String(req.params.id || "").trim();
-    if (!id) return res.status(400).json({ error: "Usuário não identificado." });
-    const result = await db.query(`SELECT id, name, username, email, avatar, bio, plan, tag, is_private, followers_count, following_count, likes_count, posts_count, created_at FROM users WHERE id = $1 LIMIT 1`, [id]);
-    if (!result.rowCount) return res.status(404).json({ error: "Usuário não encontrado." });
+    if (!db) {
+      return res.status(500).json({
+        error: "Banco de dados não configurado."
+      });
+    }
+
+    const viewerId = req.auth?.sub || null;
+
+    const result = await db.query(
+      "SELECT * FROM users WHERE id=$1 LIMIT 1",
+      [String(req.params.id)]
+    );
+
+    if (!result.rowCount) {
+      return res.status(404).json({
+        error: "Usuário não encontrado."
+      });
+    }
+
     const user = result.rows[0];
-    const requester = String(req.headers.authorization || "").startsWith("Bearer ") ? null : null;
-    if (user.is_private) return res.status(403).json({ error: "Este perfil é privado.", private: true, user: { id: user.id, username: user.username, isPrivate: true } });
-    res.json({ success: true, user: publicUser(user) });
+    const canView = await canViewPrivateProfile(viewerId, user);
+
+    if (!canView) {
+      return res.json({
+        success: true,
+        private: true,
+        user: {
+          id: user.id,
+          name: user.name,
+          username: user.username,
+          avatar: user.avatar || "",
+          bio: "",
+          isPrivate: true,
+          followers: user.followers_count,
+          following: user.following_count
+        }
+      });
+    }
+
+    res.json({
+      success: true,
+      private: false,
+      user: publicUser(user)
+    });
   } catch (error) {
     console.error("ERRO /api/users/:id:", error);
-    res.status(500).json({ error: "Não foi possível carregar o perfil." });
+    res.status(500).json({
+      error: "Não foi possível carregar o perfil."
+    });
   }
 });
 
-app.patch("/api/auth/profile", authRequired, async (req, res) => {
+app.get("/api/users/:id/follow-status", authRequired, async (req, res) => {
   try {
-    if (!db) return res.status(500).json({ error: "Banco de dados não configurado no servidor." });
-    const name = typeof req.body.name === "string" ? req.body.name.trim() : "";
-    const usernameRaw = typeof req.body.username === "string" ? req.body.username : "";
-    const username = usernameRaw ? normalizeUsername(usernameRaw) : "";
-    const avatar = typeof req.body.avatar === "string" ? req.body.avatar.trim() : "";
-    const hasPrivate = typeof req.body.isPrivate === "boolean";
-    if (name && (name.length < 2 || name.length > 80)) return res.status(400).json({ error: "O nome deve ter entre 2 e 80 caracteres." });
-    if (username && !/^[a-z0-9._]{3,30}$/.test(username)) return res.status(400).json({ error: "O @usuário deve ter 3 a 30 caracteres e usar apenas letras, números, ponto ou _." });
-    if (avatar && !avatar.startsWith("data:image/")) return res.status(400).json({ error: "Foto de perfil inválida." });
-    const current = await db.query(`SELECT id, name, username, avatar, is_private FROM users WHERE id = $1 LIMIT 1`, [req.auth.sub]);
-    if (!current.rowCount) return res.status(404).json({ error: "Conta não encontrada." });
-    const old = current.rows[0];
-    if (username && username !== old.username) {
-      const exists = await db.query(`SELECT id FROM users WHERE username = $1 AND id <> $2 LIMIT 1`, [username, req.auth.sub]);
-      if (exists.rowCount) return res.status(409).json({ error: "Esse @usuário já está em uso." });
+    const state = await getFollowState(
+      req.auth.sub,
+      String(req.params.id)
+    );
+
+    res.json({
+      success: true,
+      ...state
+    });
+  } catch (error) {
+    console.error("ERRO /follow-status:", error);
+    res.status(500).json({
+      error: "Não foi possível carregar o estado do follow."
+    });
+  }
+});
+
+app.post("/api/users/:id/follow", authRequired, async (req, res) => {
+  try {
+    if (!db) {
+      return res.status(500).json({
+        error: "Banco de dados não configurado."
+      });
     }
-    const result = await db.query(`UPDATE users SET name = $1, username = $2, avatar = $3, is_private = $4 WHERE id = $5 RETURNING id, name, username, email, avatar, bio, plan, tag, is_private, followers_count, following_count, likes_count, posts_count, created_at`, [name || old.name, username || old.username, avatar || old.avatar || "", hasPrivate ? req.body.isPrivate : !!old.is_private, req.auth.sub]);
-    res.json({ success: true, user: publicUser(result.rows[0]) });
-  } catch (error) {
-    console.error("ERRO /api/auth/profile:", error);
-    res.status(500).json({ error: "Não foi possível atualizar o perfil." });
-  }
-});
 
-app.post("/api/chat", async (req, res) => {
-  try {
-    const message =
-      typeof req.body.message === "string"
-        ? req.body.message.trim()
-        : "";
+    const targetId = String(req.params.id);
+    const viewerId = String(req.auth.sub);
 
-    if (!message)
-      return res.status(400).json({ error: "Digite uma mensagem." });
-
-    if (!OPENAI_API_KEY)
-      return res.status(500).json({
-        error: "OPENAI_API_KEY não configurada no servidor."
-      });
-
-    const response = await openai.responses.create({
-      model: "gpt-5.6-luna",
-      instructions: `
-Você é a NovaAI, assistente oficial da GeraçãoZ.
-Responda em português do Brasil, salvo se o usuário pedir outro idioma.
-Seja natural, útil, clara e objetiva.
-Pedidos de geração ou edição de imagens são tratados pelas rotas específicas.
-      `,
-      input: message
-    });
-
-    const answer = response.output_text;
-
-    if (!answer)
-      return res.status(502).json({
-        error: "A API não retornou texto."
-      });
-
-    res.json({
-      response: answer,
-      output_text: answer
-    });
-  } catch (error) {
-    console.error("ERRO /api/chat:", error);
-    res.status(500).json({
-      error: error?.message || "Erro ao conversar com a NovaAI."
-    });
-  }
-});
-
-/* =====================================================
-   GERAR IMAGEM
-===================================================== */
-
-app.post("/api/image", async (req, res) => {
-  try {
-    const prompt =
-      typeof req.body.prompt === "string"
-        ? req.body.prompt.trim()
-        : "";
-
-    if (!prompt)
+    if (targetId === viewerId) {
       return res.status(400).json({
-        error: "Informe o que você quer criar."
+        error: "Você não pode seguir a si mesmo."
       });
+    }
 
-    if (!OPENAI_API_KEY)
-      return res.status(500).json({
-        error: "OPENAI_API_KEY não configurada no servidor."
-      });
-
-    const requestedCount = Number.parseInt(req.body.count, 10);
-    const count = Number.isFinite(requestedCount)
-      ? Math.min(4, Math.max(1, requestedCount))
-      : 1;
-
-    const results = await Promise.all(
-      Array.from({ length: count }, () =>
-        openai.images.generate({
-          model: "gpt-image-2",
-          prompt,
-          size: "1024x1024"
-        })
-      )
+    const target = await db.query(
+      "SELECT id,name,username FROM users WHERE id=$1 LIMIT 1",
+      [targetId]
     );
 
-    const images = results
-      .map(result => result?.data?.[0]?.b64_json)
-      .filter(Boolean)
-      .map(base64 => "data:image/png;base64," + base64);
+    if (!target.rowCount) {
+      return res.status(404).json({
+        error: "Usuário não encontrado."
+      });
+    }
 
-    if (!images.length)
-      throw new Error("A API não retornou os dados das imagens.");
+    await db.query(
+      `INSERT INTO follows (follower_id, following_id)
+       VALUES ($1,$2)
+       ON CONFLICT DO NOTHING`,
+      [viewerId, targetId]
+    );
+
+    await db.query(
+      `UPDATE users
+       SET following_count = (
+         SELECT COUNT(*) FROM follows WHERE follower_id=$1
+       )
+       WHERE id=$1`,
+      [viewerId]
+    );
+
+    await db.query(
+      `UPDATE users
+       SET followers_count = (
+         SELECT COUNT(*) FROM follows WHERE following_id=$1
+       )
+       WHERE id=$1`,
+      [targetId]
+    );
+
+    await createAccountNotification(
+      targetId,
+      viewerId,
+      "follow",
+      "Novo seguidor",
+      "Alguém começou a seguir você.",
+      viewerId
+    );
+
+    const state = await getFollowState(viewerId, targetId);
 
     res.json({
       success: true,
-      images,
-      image: images[0],
-      imageUrl: images[0],
-      url: images[0]
+      ...state
     });
   } catch (error) {
-    console.error("ERRO /api/image:", error);
+    console.error("ERRO /follow POST:", error);
     res.status(500).json({
-      error: error?.message || "Não foi possível gerar a imagem."
+      error: "Não foi possível seguir este usuário."
     });
   }
 });
 
-/* =====================================================
-   EDITAR IMAGEM
-===================================================== */
-
-app.post("/api/image/edit", upload.single("image"), async (req, res) => {
+app.delete("/api/users/:id/follow", authRequired, async (req, res) => {
   try {
-    if (!req.file)
-      return res.status(400).json({
-        error: "Nenhuma imagem foi enviada."
-      });
-
-    if (!OPENAI_API_KEY)
+    if (!db) {
       return res.status(500).json({
-        error: "OPENAI_API_KEY não configurada no servidor."
+        error: "Banco de dados não configurado."
       });
+    }
 
-    const prompt =
-      typeof req.body.prompt === "string" && req.body.prompt.trim()
-        ? req.body.prompt.trim()
-        : "Edite esta imagem de forma criativa.";
+    const targetId = String(req.params.id);
+    const viewerId = String(req.auth.sub);
 
-    const file = new File(
-      [req.file.buffer],
-      req.file.originalname || "imagem.png",
-      { type: req.file.mimetype || "image/png" }
+    await db.query(
+      `DELETE FROM follows
+       WHERE follower_id=$1 AND following_id=$2`,
+      [viewerId, targetId]
     );
 
-    const result = await openai.images.edit({
-      model: "gpt-image-2",
-      image: file,
-      prompt,
-      size: "1024x1024"
-    });
+    await db.query(
+      `UPDATE users
+       SET following_count = (
+         SELECT COUNT(*) FROM follows WHERE follower_id=$1
+       )
+       WHERE id=$1`,
+      [viewerId]
+    );
 
-    const imageData = result?.data?.[0]?.b64_json;
+    await db.query(
+      `UPDATE users
+       SET followers_count = (
+         SELECT COUNT(*) FROM follows WHERE following_id=$1
+       )
+       WHERE id=$1`,
+      [targetId]
+    );
 
-    if (!imageData)
-      throw new Error("A API não retornou a imagem editada.");
-
-    const image = "data:image/png;base64," + imageData;
+    const state = await getFollowState(viewerId, targetId);
 
     res.json({
       success: true,
-      image,
-      imageUrl: image,
-      url: image
+      ...state
     });
   } catch (error) {
-    console.error("ERRO /api/image/edit:", error);
+    console.error("ERRO /follow DELETE:", error);
     res.status(500).json({
-      error: error?.message || "Não foi possível editar a imagem."
+      error: "Não foi possível deixar de seguir."
+    });
+  }
+});
+
+app.get("/api/users/:id/followers", async (req, res) => {
+  try {
+    if (!db) {
+      return res.status(500).json({
+        error: "Banco de dados não configurado."
+      });
+    }
+
+    const result = await db.query(
+      `SELECT
+        u.id,
+        u.name,
+        u.username,
+        u.avatar,
+        u.bio,
+        u.is_private
+       FROM follows f
+       JOIN users u ON u.id=f.follower_id
+       WHERE f.following_id=$1
+       ORDER BY f.created_at DESC`,
+      [String(req.params.id)]
+    );
+
+    res.json({
+      success: true,
+      users: result.rows.map(publicUser)
+    });
+  } catch (error) {
+    console.error("ERRO /followers:", error);
+    res.status(500).json({
+      error: "Não foi possível carregar os seguidores."
+    });
+  }
+});
+
+app.get("/api/users/:id/following", async (req, res) => {
+  try {
+    if (!db) {
+      return res.status(500).json({
+        error: "Banco de dados não configurado."
+      });
+    }
+
+    const result = await db.query(
+      `SELECT
+        u.id,
+        u.name,
+        u.username,
+        u.avatar,
+        u.bio,
+        u.is_private
+       FROM follows f
+       JOIN users u ON u.id=f.following_id
+       WHERE f.follower_id=$1
+       ORDER BY f.created_at DESC`,
+      [String(req.params.id)]
+    );
+
+    res.json({
+      success: true,
+      users: result.rows.map(publicUser)
+    });
+  } catch (error) {
+    console.error("ERRO /following:", error);
+    res.status(500).json({
+      error: "Não foi possível carregar quem este usuário segue."
+    });
+  }
+});
+app.get("/api/auth/profile", authRequired, async (req, res) => {
+  try {
+    if (!db) {
+      return res.status(500).json({
+        error: "Banco de dados não configurado."
+      });
+    }
+
+    const result = await db.query(
+      "SELECT * FROM users WHERE id=$1 LIMIT 1",
+      [req.auth.sub]
+    );
+
+    if (!result.rowCount) {
+      return res.status(404).json({
+        error: "Conta não encontrada."
+      });
+    }
+
+    res.json({
+      success: true,
+      user: publicUser(result.rows[0])
+    });
+  } catch (error) {
+    console.error("ERRO /api/auth/profile GET:", error);
+    res.status(500).json({
+      error: "Não foi possível carregar o perfil."
+    });
+  }
+});
+
+app.post("/api/auth/profile", authRequired, async (req, res) => {
+  try {
+    if (!db) {
+      return res.status(500).json({
+        error: "Banco de dados não configurado."
+      });
+    }
+
+    const name =
+      typeof req.body.name === "string"
+        ? req.body.name.trim()
+        : "";
+
+    const bio =
+      typeof req.body.bio === "string"
+        ? req.body.bio.trim()
+        : "";
+
+    const avatar =
+      typeof req.body.avatar === "string"
+        ? req.body.avatar
+        : "";
+
+    const tag =
+      typeof req.body.tag === "string"
+        ? req.body.tag.trim()
+        : "";
+
+    if (name.length < 2 || name.length > 80) {
+      return res.status(400).json({
+        error: "O nome deve ter entre 2 e 80 caracteres."
+      });
+    }
+
+    if (bio.length > 500) {
+      return res.status(400).json({
+        error: "A biografia deve ter no máximo 500 caracteres."
+      });
+    }
+
+    await db.query(
+      `UPDATE users
+       SET name=$1,
+           bio=$2,
+           avatar=$3,
+           tag=$4
+       WHERE id=$5`,
+      [
+        name,
+        bio,
+        avatar,
+        tag,
+        req.auth.sub
+      ]
+    );
+
+    const result = await db.query(
+      "SELECT * FROM users WHERE id=$1 LIMIT 1",
+      [req.auth.sub]
+    );
+
+    res.json({
+      success: true,
+      user: publicUser(result.rows[0])
+    });
+  } catch (error) {
+    console.error("ERRO /api/auth/profile POST:", error);
+    res.status(500).json({
+      error: "Não foi possível atualizar o perfil."
+    });
+  }
+});
+
+app.post("/api/auth/privacy", authRequired, async (req, res) => {
+  try {
+    if (!db) {
+      return res.status(500).json({
+        error: "Banco de dados não configurado."
+      });
+    }
+
+    const isPrivate = !!req.body.isPrivate;
+
+    await db.query(
+      `UPDATE users
+       SET is_private=$1
+       WHERE id=$2`,
+      [isPrivate, req.auth.sub]
+    );
+
+    const result = await db.query(
+      "SELECT * FROM users WHERE id=$1 LIMIT 1",
+      [req.auth.sub]
+    );
+
+    res.json({
+      success: true,
+      user: publicUser(result.rows[0])
+    });
+  } catch (error) {
+    console.error("ERRO /api/auth/privacy:", error);
+    res.status(500).json({
+      error: "Não foi possível alterar a privacidade."
     });
   }
 });
 
 /* =====================================================
-   POSTS / FEED / PERFIL
+   PUBLICAÇÕES
 ===================================================== */
 
 app.get("/api/posts", async (req, res) => {
   try {
-    const userId = String(req.query.userId || "");
-    if (!db) return res.json({ success: true, posts });
-
-    const privateUsersResult = await db.query(`SELECT id FROM users WHERE is_private = TRUE`);
-    const privateUserIds = new Set(privateUsersResult.rows.map(r => String(r.id)));
-    const visiblePosts = posts.filter(post => !privateUserIds.has(String(post.userId || "")) || String(post.userId || "") === userId);
-
-    const postRows = await db.query(
-      "SELECT post_id, COUNT(*)::int AS likes FROM post_likes GROUP BY post_id"
-    );
-    const userPostRows = userId
-      ? await db.query("SELECT post_id FROM post_likes WHERE user_id = $1", [userId])
-      : { rows: [] };
-    const commentRows = await db.query(
-      "SELECT comment_id, COUNT(*)::int AS likes FROM comment_likes GROUP BY comment_id"
-    );
-    const userCommentRows = userId
-      ? await db.query("SELECT comment_id FROM comment_likes WHERE user_id = $1", [userId])
-      : { rows: [] };
-
-    const postCounts = new Map(postRows.rows.map(r => [String(r.post_id), Number(r.likes || 0)]));
-    const userPosts = new Set(userPostRows.rows.map(r => String(r.post_id)));
-    const commentCounts = new Map(commentRows.rows.map(r => [String(r.comment_id), Number(r.likes || 0)]));
-    const userComments = new Set(userCommentRows.rows.map(r => String(r.comment_id)));
-
-    const output = visiblePosts.map(post => ({
-      ...post,
-      likes: postCounts.get(String(post.id)) || 0,
-      liked: userPosts.has(String(post.id)),
-      comments: (post.comments || []).map(comment => ({
-        ...comment,
-        likes: commentCounts.get(String(comment.id)) || 0,
-        liked: userComments.has(String(comment.id))
-      }))
-    }));
-
-    res.json({ success: true, posts: output });
+    res.json({
+      success: true,
+      posts
+    });
   } catch (error) {
-    console.error("ERRO /api/posts:", error);
-    res.status(500).json({ error: "Não foi possível carregar o feed." });
+    console.error("ERRO /api/posts GET:", error);
+    res.status(500).json({
+      error: "Não foi possível carregar as publicações."
+    });
   }
 });
 
-app.post("/api/posts", async (req, res) => {
-  const image = req.body.image;
-  const caption =
-    typeof req.body.caption === "string" ? req.body.caption.trim() : "";
-
-  if (!validImage(image))
-    return res.status(400).json({
-      error: "Nenhuma imagem válida foi enviada."
-    });
-
-  const post = createItem(
-    image,
-    caption,
-    req.body.userId,
-    req.body.userName,
-    req.body.username,
-    req.body.avatar
-  );
-  posts.unshift(post);
-
+app.post("/api/posts", authRequired, async (req, res) => {
   try {
-    if (db) {
-      await db.query(
-        `INSERT INTO posts
-          (id, image, caption, user_id, user_name, username, avatar, comments)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8::jsonb)
-         ON CONFLICT (id) DO UPDATE SET
-           image=EXCLUDED.image,
-           caption=EXCLUDED.caption,
-           user_id=EXCLUDED.user_id,
-           user_name=EXCLUDED.user_name,
-           username=EXCLUDED.username,
-           avatar=EXCLUDED.avatar,
-           comments=EXCLUDED.comments`,
-        [post.id, post.image, post.caption, post.userId, post.userName, post.username, post.avatar, JSON.stringify(post.comments || [])]
-      );
-    }
-  } catch (error) {
-    posts.splice(posts.findIndex(p => String(p.id) === String(post.id)), 1);
-    console.error("ERRO AO SALVAR PUBLICAÇÃO:", error);
-    return res.status(500).json({ error: "Não foi possível salvar a publicação." });
-  }
+    const image = req.body.image;
 
-  res.status(201).json({
-    success: true,
-    post
-  });
+    const caption =
+      typeof req.body.caption === "string"
+        ? req.body.caption.trim()
+        : "";
+
+    if (!validImage(image)) {
+      return res.status(400).json({
+        error: "Nenhuma imagem válida foi enviada."
+      });
+    }
+
+    const result = await db.query(
+      "SELECT id,name,username,avatar FROM users WHERE id=$1 LIMIT 1",
+      [req.auth.sub]
+    );
+
+    if (!result.rowCount) {
+      return res.status(404).json({
+        error: "Conta não encontrada."
+      });
+    }
+
+    const user = result.rows[0];
+
+    const post = createItem(
+      image,
+      caption,
+      user.id,
+      user.name,
+      user.username,
+      user.avatar || ""
+    );
+
+    posts.unshift(post);
+
+    await db.query(
+      `UPDATE users
+       SET posts_count = posts_count + 1
+       WHERE id=$1`,
+      [req.auth.sub]
+    );
+
+    res.status(201).json({
+      success: true,
+      post
+    });
+  } catch (error) {
+    console.error("ERRO /api/posts POST:", error);
+    res.status(500).json({
+      error: "Não foi possível publicar."
+    });
+  }
 });
 
 app.delete("/api/posts/:id", authRequired, async (req, res) => {
-  const index = posts.findIndex(p => p.id === req.params.id);
-
-  if (index < 0)
-    return res.status(404).json({
-      error: "Publicação não encontrada."
-    });
-
-  const post = posts[index];
-  posts.splice(index, 1);
-
   try {
-    if (db) {
-      const commentIds = Array.isArray(post.comments)
-        ? post.comments.map(c => String(c.id || "")).filter(Boolean)
-        : [];
+    const index = posts.findIndex(
+      post => String(post.id) === String(req.params.id)
+    );
 
-      if (commentIds.length) {
-        await db.query(
-          "DELETE FROM comment_likes WHERE comment_id = ANY($1::text[])",
-          [commentIds]
-        );
-      }
-
-      await db.query("DELETE FROM post_likes WHERE post_id = $1", [post.id]);
-      await db.query("DELETE FROM posts WHERE id = $1", [post.id]);
+    if (index < 0) {
+      return res.status(404).json({
+        error: "Publicação não encontrada."
+      });
     }
-  } catch (error) {
-    posts.splice(index, 0, post);
-    console.error("ERRO AO EXCLUIR PUBLICAÇÃO:", error);
-    return res.status(500).json({ error: "Não foi possível excluir a publicação." });
-  }
 
-  res.json({ success: true });
+    const post = posts[index];
+
+    if (String(post.userId) !== String(req.auth.sub)) {
+      return res.status(403).json({
+        error: "Você não pode apagar esta publicação."
+      });
+    }
+
+    posts.splice(index, 1);
+
+    await db.query(
+      `UPDATE users
+       SET posts_count = GREATEST(0, posts_count - 1)
+       WHERE id=$1`,
+      [req.auth.sub]
+    );
+
+    res.json({
+      success: true
+    });
+  } catch (error) {
+    console.error("ERRO /api/posts DELETE:", error);
+    res.status(500).json({
+      error: "Não foi possível apagar a publicação."
+    });
+  }
 });
 
-app.post("/api/posts/:id/like", async (req, res) => {
+app.post("/api/posts/:id/like", authRequired, async (req, res) => {
   try {
     const post = find(posts, req.params.id);
-    const userId = String(req.body.userId || "").trim();
 
-    if (!post) return res.status(404).json({ error: "Publicação não encontrada." });
-    if (!userId) return res.status(400).json({ error: "Usuário não identificado." });
-    if (!db) return res.status(500).json({ error: "Banco de dados não configurado." });
+    if (!post) {
+      return res.status(404).json({
+        error: "Publicação não encontrada."
+      });
+    }
+
+    const userId = String(req.auth.sub);
 
     const existing = await db.query(
-      "SELECT 1 FROM post_likes WHERE post_id = $1 AND user_id = $2",
-      [req.params.id, userId]
+      `SELECT 1
+       FROM post_likes
+       WHERE post_id=$1 AND user_id=$2
+       LIMIT 1`,
+      [String(post.id), userId]
     );
 
     let liked;
 
     if (existing.rowCount) {
       await db.query(
-        "DELETE FROM post_likes WHERE post_id = $1 AND user_id = $2",
-        [req.params.id, userId]
+        `DELETE FROM post_likes
+         WHERE post_id=$1 AND user_id=$2`,
+        [String(post.id), userId]
       );
+
       liked = false;
     } else {
       await db.query(
-        "INSERT INTO post_likes (post_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-        [req.params.id, userId]
+        `INSERT INTO post_likes(post_id,user_id)
+         VALUES($1,$2)
+         ON CONFLICT DO NOTHING`,
+        [String(post.id), userId]
       );
+
       liked = true;
     }
 
     const count = await db.query(
-      "SELECT COUNT(*)::int AS likes FROM post_likes WHERE post_id = $1",
-      [req.params.id]
+      `SELECT COUNT(*)::int AS count
+       FROM post_likes
+       WHERE post_id=$1`,
+      [String(post.id)]
     );
 
-    if (liked && post.userId && String(post.userId) !== userId) {
-      const actor = await db.query(
-        "SELECT name FROM users WHERE id = $1 LIMIT 1",
-        [userId]
-      );
-
-      const actorName = actor.rows[0]?.name || "Alguém";
-
-      await createAccountNotification(
-        post.userId,
-        userId,
-        "like",
-        actorName + " curtiu sua publicação",
-        "Toque para abrir a publicação.",
-        req.params.id
-      );
-    }
+    post.likes = Number(count.rows[0]?.count || 0);
 
     res.json({
       success: true,
       liked,
-      likes: Number(count.rows[0]?.likes || 0)
+      likes: post.likes
     });
   } catch (error) {
     console.error("ERRO /api/posts/:id/like:", error);
-    res.status(500).json({ error: "Não foi possível alterar a curtida." });
+    res.status(500).json({
+      error: "Não foi possível alterar a curtida."
+    });
   }
 });
-
-app.post("/api/posts/:postId/comments/:commentId/like", async (req, res) => {
-    try {
+app.get("/api/posts/:postId/comments", async (req, res) => {
+  try {
     const post = find(posts, req.params.postId);
-    const comment = post?.comments?.find(
-      c => String(c.id) === String(req.params.commentId)
-    );
-    const userId = String(req.body.userId || "").trim();
 
-    if (!comment)
+    if (!post) {
       return res.status(404).json({
-        error: "Comentário não encontrado."
+        error: "Publicação não encontrada."
       });
-
-    if (!userId)
-      return res.status(400).json({
-        error: "Usuário não identificado."
-      });
-
-    if (!db)
-      return res.status(500).json({
-        error: "Banco de dados não configurado."
-      });
-
-    const existing = await db.query(
-      "SELECT 1 FROM comment_likes WHERE comment_id = $1 AND user_id = $2",
-      [req.params.commentId, userId]
-    );
-
-    let liked;
-
-    if (existing.rowCount) {
-      await db.query(
-        "DELETE FROM comment_likes WHERE comment_id = $1 AND user_id = $2",
-        [req.params.commentId, userId]
-      );
-      liked = false;
-    } else {
-      await db.query(
-        "INSERT INTO comment_likes (comment_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
-        [req.params.commentId, userId]
-      );
-      liked = true;
-    }
-
-    const count = await db.query(
-      "SELECT COUNT(*)::int AS likes FROM comment_likes WHERE comment_id = $1",
-      [req.params.commentId]
-    );
-
-    if (liked && comment.userId && String(comment.userId) !== userId) {
-      const actor = await db.query(
-        "SELECT name FROM users WHERE id = $1 LIMIT 1",
-        [userId]
-      );
-
-      const actorName = actor.rows[0]?.name || "Alguém";
-
-      await createAccountNotification(
-        comment.userId,
-        userId,
-        "like",
-        actorName + " curtiu seu comentário",
-        "Toque para abrir os comentários.",
-        req.params.postId
-      );
     }
 
     res.json({
       success: true,
-      liked,
-      likes: Number(count.rows[0]?.likes || 0)
+      comments: post.comments || []
     });
   } catch (error) {
-    console.error(
-      "ERRO /api/posts/:postId/comments/:commentId/like:",
-      error
+    console.error("ERRO /comments GET:", error);
+    res.status(500).json({
+      error: "Não foi possível carregar os comentários."
+    });
+  }
+});
+
+app.post("/api/posts/:postId/comments", authRequired, async (req, res) => {
+  try {
+    const post = find(posts, req.params.postId);
+
+    if (!post) {
+      return res.status(404).json({
+        error: "Publicação não encontrada."
+      });
+    }
+
+    const text =
+      typeof req.body.text === "string"
+        ? req.body.text.trim()
+        : "";
+
+    if (!text) {
+      return res.status(400).json({
+        error: "Digite um comentário."
+      });
+    }
+
+    if (text.length > 500) {
+      return res.status(400).json({
+        error: "O comentário deve ter no máximo 500 caracteres."
+      });
+    }
+
+    const userResult = await db.query(
+      `SELECT id,name,username,avatar
+       FROM users
+       WHERE id=$1
+       LIMIT 1`,
+      [req.auth.sub]
     );
 
+    if (!userResult.rowCount) {
+      return res.status(404).json({
+        error: "Conta não encontrada."
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    const comment = {
+      id: id(),
+      text,
+      userId: String(user.id),
+      userName: user.name,
+      username: user.username,
+      avatar: user.avatar || "",
+      likes: 0,
+      createdAt: timeNow()
+    };
+
+    post.comments = post.comments || [];
+    post.comments.push(comment);
+
+    res.status(201).json({
+      success: true,
+      comment
+    });
+  } catch (error) {
+    console.error("ERRO /comments POST:", error);
     res.status(500).json({
-      error: "Não foi possível alterar a curtida do comentário."
+      error: "Não foi possível publicar o comentário."
     });
   }
 });
@@ -894,7 +1117,8 @@ app.delete(
       }
 
       const commentIndex = (post.comments || []).findIndex(
-        c => String(c.id) === String(req.params.commentId)
+        comment =>
+          String(comment.id) === String(req.params.commentId)
       );
 
       if (commentIndex < 0) {
@@ -904,49 +1128,31 @@ app.delete(
       }
 
       const comment = post.comments[commentIndex];
-      const currentUserId = String(req.auth?.sub || "");
+
+      const currentUserId = String(req.auth.sub);
       const postOwnerId = String(post.userId || "");
-      const commentOwnerId = String(
-        comment.userId || comment.user?.id || ""
-      );
+      const commentOwnerId = String(comment.userId || "");
 
       const isPostOwner =
-        currentUserId && currentUserId === postOwnerId;
+        currentUserId === postOwnerId;
 
       const isCommentOwner =
-        currentUserId && currentUserId === commentOwnerId;
+        currentUserId === commentOwnerId;
 
       if (!isPostOwner && !isCommentOwner) {
         return res.status(403).json({
-          error: "Você só pode apagar seus próprios comentários ou comentários da sua publicação."
+          error: "Você não pode apagar este comentário."
         });
       }
 
       post.comments.splice(commentIndex, 1);
 
-      try {
-        if (db) {
-          await db.query(
-            "UPDATE posts SET comments = $1::jsonb WHERE id = $2",
-            [JSON.stringify(post.comments), post.id]
-          );
-
-          await db.query(
-            "DELETE FROM comment_likes WHERE comment_id = $1",
-            [req.params.commentId]
-          );
-        }
-      } catch (error) {
-        post.comments.splice(commentIndex, 0, comment);
-
-        console.error(
-          "ERRO AO PERSISTIR EXCLUSÃO DO COMENTÁRIO:",
-          error
+      if (db) {
+        await db.query(
+          `DELETE FROM comment_likes
+           WHERE comment_id=$1`,
+          [req.params.commentId]
         );
-
-        return res.status(500).json({
-          error: "Não foi possível apagar o comentário."
-        });
       }
 
       res.json({
@@ -954,7 +1160,7 @@ app.delete(
         deletedCommentId: req.params.commentId
       });
     } catch (error) {
-      console.error("ERRO DELETE comentário:", error);
+      console.error("ERRO /comments DELETE:", error);
 
       res.status(500).json({
         error: "Não foi possível apagar o comentário."
@@ -963,81 +1169,85 @@ app.delete(
   }
 );
 
-app.post("/api/posts/:id/comments", async (req, res) => {
-  const post = find(posts, req.params.id);
+app.post(
+  "/api/posts/:postId/comments/:commentId/like",
+  authRequired,
+  async (req, res) => {
+    try {
+      const post = find(posts, req.params.postId);
 
-  const text =
-    typeof req.body.text === "string"
-      ? req.body.text.trim()
-      : "";
+      if (!post) {
+        return res.status(404).json({
+          error: "Publicação não encontrada."
+        });
+      }
 
-  if (!post)
-    return res.status(404).json({
-      error: "Publicação não encontrada."
-    });
-
-  if (!text)
-    return res.status(400).json({
-      error: "Digite um comentário."
-    });
-
-  if (text.length > 500)
-    return res.status(400).json({
-      error: "O comentário deve ter no máximo 500 caracteres."
-    });
-
-  const comment = {
-    id: id(),
-    userId: req.body.userId ? String(req.body.userId) : "",
-    name: req.body.userName || "Você",
-    userName: req.body.userName || "Você",
-    username: req.body.username || "@voce",
-    avatar: req.body.avatar || "",
-    text,
-    createdAt: timeNow()
-  };
-
-  post.comments.push(comment);
-
-  try {
-    if (db) {
-      await db.query(
-        "UPDATE posts SET comments = $1::jsonb WHERE id = $2",
-        [JSON.stringify(post.comments), post.id]
+      const comment = (post.comments || []).find(
+        item =>
+          String(item.id) === String(req.params.commentId)
       );
+
+      if (!comment) {
+        return res.status(404).json({
+          error: "Comentário não encontrado."
+        });
+      }
+
+      const userId = String(req.auth.sub);
+      const commentId = String(comment.id);
+
+      const existing = await db.query(
+        `SELECT 1
+         FROM comment_likes
+         WHERE comment_id=$1 AND user_id=$2
+         LIMIT 1`,
+        [commentId, userId]
+      );
+
+      let liked;
+
+      if (existing.rowCount) {
+        await db.query(
+          `DELETE FROM comment_likes
+           WHERE comment_id=$1 AND user_id=$2`,
+          [commentId, userId]
+        );
+
+        liked = false;
+      } else {
+        await db.query(
+          `INSERT INTO comment_likes(comment_id,user_id)
+           VALUES($1,$2)
+           ON CONFLICT DO NOTHING`,
+          [commentId, userId]
+        );
+
+        liked = true;
+      }
+
+      const count = await db.query(
+        `SELECT COUNT(*)::int AS count
+         FROM comment_likes
+         WHERE comment_id=$1`,
+        [commentId]
+      );
+
+      comment.likes = Number(count.rows[0]?.count || 0);
+
+      res.json({
+        success: true,
+        liked,
+        likes: comment.likes
+      });
+    } catch (error) {
+      console.error("ERRO /comment like:", error);
+
+      res.status(500).json({
+        error: "Não foi possível alterar a curtida do comentário."
+      });
     }
-  } catch (error) {
-    post.comments.pop();
-
-    console.error("ERRO AO SALVAR COMENTÁRIO:", error);
-
-    return res.status(500).json({
-      error: "Não foi possível salvar o comentário."
-    });
   }
-
-  if (
-    post.userId &&
-    comment.userId &&
-    String(post.userId) !== String(comment.userId) &&
-    db
-  ) {
-    await createAccountNotification(
-      post.userId,
-      comment.userId,
-      "comment",
-      (comment.userName || "Alguém") +
-        " comentou na sua publicação",
-      comment.text,
-      post.id
-    );
-  }
-
-  res.status(201).json({
-    success: true,
-    comment
-  });
-});
+);
 
 /* =====================================================
    STATUS
@@ -1058,10 +1268,11 @@ app.post("/api/status", (req, res) => {
       ? req.body.caption.trim()
       : "";
 
-  if (!validImage(image))
+  if (!validImage(image)) {
     return res.status(400).json({
       error: "Nenhuma imagem válida foi enviada."
     });
+  }
 
   const status = createItem(
     image,
@@ -1079,16 +1290,16 @@ app.post("/api/status", (req, res) => {
     status
   });
 });
-
 app.delete("/api/status/:id", (req, res) => {
   const index = statuses.findIndex(
     s => s.id === req.params.id
   );
 
-  if (index < 0)
+  if (index < 0) {
     return res.status(404).json({
       error: "Status não encontrado."
     });
+  }
 
   statuses.splice(index, 1);
 
@@ -1100,10 +1311,11 @@ app.delete("/api/status/:id", (req, res) => {
 app.post("/api/status/:id/like", (req, res) => {
   const status = find(statuses, req.params.id);
 
-  if (!status)
+  if (!status) {
     return res.status(404).json({
       error: "Status não encontrado."
     });
+  }
 
   status.liked = !status.liked;
 
@@ -1127,20 +1339,23 @@ app.post("/api/status/:id/comments", (req, res) => {
       ? req.body.text.trim()
       : "";
 
-  if (!status)
+  if (!status) {
     return res.status(404).json({
       error: "Status não encontrado."
     });
+  }
 
-  if (!text)
+  if (!text) {
     return res.status(400).json({
       error: "Digite um comentário."
     });
+  }
 
-  if (text.length > 500)
+  if (text.length > 500) {
     return res.status(400).json({
       error: "O comentário deve ter no máximo 500 caracteres."
     });
+  }
 
   const comment = {
     id: id(),
@@ -1162,6 +1377,7 @@ app.post("/api/status/:id/comments", (req, res) => {
     comment
   });
 });
+
 async function createAccountNotification(
   recipientId,
   actorId,
@@ -1175,7 +1391,9 @@ async function createAccountNotification(
     !recipientId ||
     !actorId ||
     String(recipientId) === String(actorId)
-  ) return;
+  ) {
+    return;
+  }
 
   await db.query(
     `INSERT INTO notifications
@@ -1188,7 +1406,9 @@ async function createAccountNotification(
       type,
       title,
       text || "",
-      targetId ? String(targetId) : ""
+      targetId
+        ? String(targetId)
+        : ""
     ]
   );
 }
@@ -1202,10 +1422,11 @@ app.get(
   authRequired,
   async (req, res) => {
     try {
-      if (!db)
+      if (!db) {
         return res.status(500).json({
           error: "Banco de dados não configurado."
         });
+      }
 
       const result = await db.query(`
         SELECT DISTINCT ON (other_id)
@@ -1252,7 +1473,8 @@ app.get(
           name: row.name,
           username: row.username
             ? "@" +
-              String(row.username).replace(/^@+/, "")
+              String(row.username)
+                .replace(/^@+/, "")
             : "@usuario",
           avatar: row.avatar || "",
           lastMessage: row.lastMessage || "",
@@ -1281,18 +1503,20 @@ app.get(
   authRequired,
   async (req, res) => {
     try {
-      if (!db)
+      if (!db) {
         return res.status(500).json({
           error: "Banco de dados não configurado."
         });
+      }
 
       const otherId =
         String(req.params.userId || "").trim();
 
-      if (!otherId)
+      if (!otherId) {
         return res.status(400).json({
           error: "Usuário não identificado."
         });
+      }
 
       const result = await db.query(`
         SELECT
@@ -1307,7 +1531,10 @@ app.get(
           OR
           (sender_id=$2 AND receiver_id=$1)
         ORDER BY created_at ASC
-      `, [req.auth.sub, otherId]);
+      `, [
+        req.auth.sub,
+        otherId
+      ]);
 
       res.json({
         success: true,
@@ -1337,10 +1564,11 @@ app.post(
   authRequired,
   async (req, res) => {
     try {
-      if (!db)
+      if (!db) {
         return res.status(500).json({
           error: "Banco de dados não configurado."
         });
+      }
 
       const toUserId =
         String(req.body.toUserId || "").trim();
@@ -1350,43 +1578,47 @@ app.post(
           ? req.body.text.trim()
           : "";
 
-      if (!toUserId)
+      if (!toUserId) {
         return res.status(400).json({
           error: "Destinatário não identificado."
         });
+      }
 
-      if (toUserId === String(req.auth.sub))
+      if (toUserId === String(req.auth.sub)) {
         return res.status(400).json({
           error: "Você não pode enviar mensagem para si mesmo."
         });
+      }
 
-      if (!text)
+      if (!text) {
         return res.status(400).json({
           error: "Digite uma mensagem."
         });
+      }
 
-      if (text.length > 2000)
+      if (text.length > 2000) {
         return res.status(400).json({
           error: "A mensagem deve ter no máximo 2000 caracteres."
         });
+      }
 
       const receiver = await db.query(
         "SELECT id FROM users WHERE id=$1 LIMIT 1",
         [toUserId]
       );
 
-      if (!receiver.rowCount)
+      if (!receiver.rowCount) {
         return res.status(404).json({
           error: "Usuário não encontrado."
         });
+      }
 
       const sender = await db.query(
         "SELECT name FROM users WHERE id=$1 LIMIT 1",
         [req.auth.sub]
       );
 
-      const messageId =
-        crypto.randomUUID();
+      const messageId = crypto.randomUUID();
 
       const result = await db.query(
         `INSERT INTO direct_messages
@@ -1455,10 +1687,11 @@ app.get(
   authRequired,
   async (req, res) => {
     try {
-      if (!db)
+      if (!db) {
         return res.status(500).json({
           error: "Banco de dados não configurado."
         });
+      }
 
       const result = await db.query(`
         SELECT
@@ -1496,13 +1729,12 @@ app.get(
             : "",
           actorName:
             r.actorName || "Usuário",
-          actorUsername: r.actorUsername
-            ? "@" +
-              String(r.actorUsername).replace(
-                /^@+/,
-                ""
-              )
-            : "@usuario",
+          actorUsername:
+            r.actorUsername
+              ? "@" +
+                String(r.actorUsername)
+                  .replace(/^@+/, "")
+              : "@usuario",
           avatar: r.avatar || ""
         }))
       });
@@ -1513,8 +1745,7 @@ app.get(
       );
 
       res.status(500).json({
-        error:
-          "Não foi possível carregar as notificações."
+        error: "Não foi possível carregar as notificações."
       });
     }
   }
@@ -1525,26 +1756,36 @@ app.post(
   authRequired,
   async (req, res) => {
     try {
-      if (!db)
+      if (!db) {
         return res.status(500).json({
           error: "Banco de dados não configurado."
         });
+      }
 
-      const ids = Array.isArray(req.body.ids)
-        ? req.body.ids
-            .map(String)
-            .filter(Boolean)
-            .slice(0, 100)
-        : [];
+      const ids =
+        Array.isArray(req.body.ids)
+          ? req.body.ids
+              .map(String)
+              .filter(Boolean)
+              .slice(0, 100)
+          : [];
 
       if (ids.length) {
         await db.query(
-          "UPDATE notifications SET is_read=TRUE WHERE recipient_id=$1 AND id=ANY($2::uuid[])",
-          [req.auth.sub, ids]
+          `UPDATE notifications
+           SET is_read=TRUE
+           WHERE recipient_id=$1
+             AND id=ANY($2::uuid[])`,
+          [
+            req.auth.sub,
+            ids
+          ]
         );
       } else {
         await db.query(
-          "UPDATE notifications SET is_read=TRUE WHERE recipient_id=$1",
+          `UPDATE notifications
+           SET is_read=TRUE
+           WHERE recipient_id=$1`,
           [req.auth.sub]
         );
       }
@@ -1559,8 +1800,7 @@ app.post(
       );
 
       res.status(500).json({
-        error:
-          "Não foi possível marcar as notificações."
+        error: "Não foi possível marcar as notificações."
       });
     }
   }
@@ -1580,7 +1820,9 @@ app.use((error, req, res, next) => {
   }
 
   res.status(500).json({
-    error: error?.message || "Erro interno do servidor."
+    error:
+      error?.message ||
+      "Erro interno do servidor."
   });
 });
 
@@ -1592,6 +1834,7 @@ async function startServer() {
       "❌ ERRO AO INICIALIZAR O BANCO:",
       error
     );
+
     process.exit(1);
   }
 
