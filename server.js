@@ -1065,7 +1065,7 @@ app.get("/api/music/search", async (req, res) => {
 
     url.searchParams.set("query", query);
     url.searchParams.set("limit", "30");
-    url.searchParams.set("sort_method", "relevant");
+    url.searchParams.set("sortMethod", "relevant");
 
     const response = await fetch(url, {
       method: "GET",
