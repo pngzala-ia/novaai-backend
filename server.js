@@ -1031,7 +1031,296 @@ app.use(
     limit: "12mb"
   })
 );
+/* =========================================================
+   NOVAZ - SISTEMA DE MÚSICAS AUDIUS
+   ========================================================= */
 
+app.get("/api/music/search", async (req, res) => {
+  try {
+    const query =
+      typeof req.query.q === "string"
+        ? req.query.q.trim()
+        : "";
+
+    if (!query) {
+      return res.json({
+        success: true,
+        tracks: []
+      });
+    }
+
+    const apiKey = process.env.AUDIUS_API_KEY;
+    const bearerToken = process.env.AUDIUS_BEARER_TOKEN;
+
+    if (!apiKey || !bearerToken) {
+      console.error("AUDIUS: credenciais não configuradas.");
+      return res.status(500).json({
+        error: "Audius não está configurado no servidor."
+      });
+    }
+
+    const url = new URL(
+      "https://api.audius.co/v1/tracks/search"
+    );
+
+    url.searchParams.set("query", query);
+    url.searchParams.set("limit", "30");
+    url.searchParams.set("sort_method", "relevant");
+
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "X-API-Key": apiKey,
+        "Authorization": `Bearer ${bearerToken}`,
+        "Accept": "application/json"
+      }
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+
+      console.error(
+        "ERRO AUDIUS SEARCH:",
+        response.status,
+        errorText
+      );
+
+      return res.status(502).json({
+        error: "Não foi possível consultar o Audius."
+      });
+    }
+
+    const result = await response.json();
+
+    const tracks = Array.isArray(result?.data)
+      ? result.data
+      : [];
+
+    const normalizedTracks = tracks
+      .filter(track => {
+        return (
+          track &&
+          track.id &&
+          track.title &&
+          track.isStreamable !== false
+        );
+      })
+      .map(track => ({
+        id: track.id,
+
+        title: track.title,
+
+        artist:
+          track.user?.name ||
+          track.user?.handle ||
+          "Artista",
+
+        genre:
+          track.genre ||
+          "Música",
+
+        year: track.releaseDate
+          ? String(track.releaseDate).slice(0, 4)
+          : "",
+
+        artwork:
+          track.artwork?._480x480 ||
+          track.artwork?._1000x1000 ||
+          track.artwork?._150x150 ||
+          "",
+
+        duration:
+          Number(track.duration) || 0,
+
+        playCount:
+          Number(track.playCount) || 0,
+
+        isStreamable:
+          track.isStreamable !== false
+      }));
+
+    res.json({
+      success: true,
+      tracks: normalizedTracks
+    });
+
+  } catch (error) {
+
+    console.error(
+      "ERRO /api/music/search:",
+      error
+    );
+
+    res.status(500).json({
+      error:
+        error?.message ||
+        "Erro ao buscar músicas."
+    });
+  }
+});
+
+
+/* =========================================================
+   STREAM DE MÚSICA
+   ========================================================= */
+
+app.get("/api/music/stream/:id", async (req, res) => {
+  try {
+
+    const trackId = String(
+      req.params.id || ""
+    ).trim();
+
+    if (!trackId) {
+      return res.status(400).json({
+        error: "ID da música não informado."
+      });
+    }
+
+    const apiKey = process.env.AUDIUS_API_KEY;
+    const bearerToken =
+      process.env.AUDIUS_BEARER_TOKEN;
+
+    if (!apiKey || !bearerToken) {
+      return res.status(500).json({
+        error: "Audius não está configurado."
+      });
+    }
+
+    const url = new URL(
+      `https://api.audius.co/v1/tracks/${encodeURIComponent(trackId)}/stream`
+    );
+
+    const response = await fetch(url, {
+      method: "GET",
+
+      headers: {
+        "X-API-Key": apiKey,
+        "Authorization": `Bearer ${bearerToken}`
+      },
+
+      redirect: "follow"
+    });
+
+    if (!response.ok) {
+
+      const errorText =
+        await response.text();
+
+      console.error(
+        "ERRO AUDIUS STREAM:",
+        response.status,
+        errorText
+      );
+
+      return res.status(502).json({
+        error:
+          "Não foi possível reproduzir esta música."
+      });
+    }
+
+    const contentType =
+      response.headers.get("content-type");
+
+    const contentLength =
+      response.headers.get("content-length");
+
+    if (contentType) {
+      res.setHeader(
+        "Content-Type",
+        contentType
+      );
+    }
+
+    if (contentLength) {
+      res.setHeader(
+        "Content-Length",
+        contentLength
+      );
+    }
+
+    res.setHeader(
+      "Cache-Control",
+      "public, max-age=3600"
+    );
+
+    res.setHeader(
+      "Accept-Ranges",
+      "bytes"
+    );
+
+    if (!response.body) {
+      return res.status(502).json({
+        error:
+          "O Audius não retornou o áudio."
+      });
+    }
+
+    const reader =
+      response.body.getReader();
+
+    const pump = async () => {
+
+      try {
+
+        while (true) {
+
+          const {
+            done,
+            value
+          } = await reader.read();
+
+          if (done) {
+            break;
+          }
+
+          if (!res.write(value)) {
+            await new Promise(resolve =>
+              res.once("drain", resolve)
+            );
+          }
+        }
+
+        res.end();
+
+      } catch (error) {
+
+        console.error(
+          "ERRO NO STREAM AUDIUS:",
+          error
+        );
+
+        if (!res.headersSent) {
+          res.status(500).end();
+        } else {
+          res.end();
+        }
+      }
+    };
+
+    pump();
+
+  } catch (error) {
+
+    console.error(
+      "ERRO /api/music/stream:",
+      error
+    );
+
+    if (!res.headersSent) {
+      res.status(500).json({
+        error:
+          error?.message ||
+          "Erro ao reproduzir música."
+      });
+    }
+  }
+});
+
+
+/* =========================================================
+   FIM DO SISTEMA AUDIUS
+   ========================================================= */
 
 /* =====================================================
    DADOS SOCIAIS TEMPORÁRIOS
