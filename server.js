@@ -213,7 +213,27 @@ app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 
 app.use(express.json({ limit: "12mb" }));
+/* =====================================================
+   MÚSICAS DA NOVAZ
+===================================================== */
 
+const path = require("path");
+
+app.use(
+  "/musicas",
+  express.static(
+    path.join(__dirname, "musicas"),
+    {
+      setHeaders: (res) => {
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader(
+          "Cache-Control",
+          "public, max-age=3600"
+        );
+      }
+    }
+  )
+);
 const upload = multer({
   storage: multer.memoryStorage(),
     limits: { fileSize: 10 * 1024 * 1024 },
