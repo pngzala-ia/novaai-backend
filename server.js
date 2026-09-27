@@ -234,6 +234,86 @@ app.use(
     }
   )
 );
+/* =========================
+   MÚSICAS AUTOMÁTICAS - AUDIUS
+   ========================= */
+
+app.get("/api/music/search", async (req, res) => {
+  try {
+    const query = String(req.query.q || "").trim();
+
+    if (!query) {
+      return res.status(400).json({
+        success: false,
+        message: "Informe uma busca."
+      });
+    }
+
+    const apiKey = process.env.AUDIUS_API_KEY;
+    const bearerToken = process.env.AUDIUS_BEARER_TOKEN;
+
+    if (!apiKey || !bearerToken) {
+      return res.status(500).json({
+        success: false,
+        message: "Audius não configurado no servidor."
+      });
+    }
+
+    const url = new URL(
+      "https://api.audius.co/v1/tracks/search"
+    );
+
+    url.searchParams.set("query", query);
+    url.searchParams.set("limit", "30");
+
+    const response = await fetch(url, {
+      headers: {
+        "X-API-Key": apiKey,
+        "Authorization": `Bearer ${bearerToken}`
+      }
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      return res.status(response.status).json({
+        success: false,
+        message: "Erro ao consultar o Audius.",
+        details: data
+      });
+    }
+
+    const tracks = Array.isArray(data.data)
+      ? data.data.map(track => ({
+          id: track.id,
+          title: track.title,
+          artist: track.user?.name || "Artista",
+          artistId: track.user?.id || null,
+          genre: track.genre || "",
+          duration: track.duration || 0,
+          artwork:
+            track.artwork?.["480x480"] ||
+            track.artwork?.["150x150"] ||
+            "",
+          permalink: track.permalink || "",
+          isStreamGated: !!track.isStreamGated
+        }))
+      : [];
+
+    res.json({
+      success: true,
+      tracks
+    });
+
+  } catch (error) {
+    console.error("Erro Audius:", error);
+
+    res.status(500).json({
+      success: false,
+      message: "Não foi possível carregar as músicas."
+    });
+  }
+});
 const upload = multer({
   storage: multer.memoryStorage(),
     limits: { fileSize: 10 * 1024 * 1024 },
