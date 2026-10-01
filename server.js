@@ -281,7 +281,169 @@ async function initDatabase() {
       );
 
   `);
+    /* =================================================
+       PUBLICAÇÕES PERMANENTES
+    ================================================= */
 
+    CREATE TABLE IF NOT EXISTS posts (
+      id TEXT PRIMARY KEY,
+
+      user_id UUID NOT NULL
+        REFERENCES users(id)
+        ON DELETE CASCADE,
+
+      image TEXT NOT NULL,
+
+      caption TEXT DEFAULT '',
+
+      likes_count INTEGER NOT NULL DEFAULT 0,
+
+      archived BOOLEAN NOT NULL DEFAULT FALSE,
+
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+
+    CREATE INDEX IF NOT EXISTS
+      posts_user_idx
+
+      ON posts(
+        user_id,
+        created_at DESC
+      );
+
+
+    CREATE INDEX IF NOT EXISTS
+      posts_created_idx
+
+      ON posts(
+        created_at DESC
+      );
+
+
+    /* =================================================
+       COMENTÁRIOS DAS PUBLICAÇÕES
+    ================================================= */
+
+    CREATE TABLE IF NOT EXISTS post_comments (
+      id TEXT PRIMARY KEY,
+
+      post_id TEXT NOT NULL
+        REFERENCES posts(id)
+        ON DELETE CASCADE,
+
+      user_id UUID NOT NULL
+        REFERENCES users(id)
+        ON DELETE CASCADE,
+
+      text TEXT NOT NULL,
+
+      parent_comment_id TEXT,
+
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+
+    CREATE INDEX IF NOT EXISTS
+      post_comments_post_idx
+
+      ON post_comments(
+        post_id,
+        created_at ASC
+      );
+
+
+    /* =================================================
+       CURTIDAS DOS STATUS
+    ================================================= */
+
+    CREATE TABLE IF NOT EXISTS status_likes (
+      status_id TEXT NOT NULL,
+
+      user_id UUID NOT NULL
+        REFERENCES users(id)
+        ON DELETE CASCADE,
+
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+      PRIMARY KEY (
+        status_id,
+        user_id
+      )
+    );
+
+
+    /* =================================================
+       STATUS PERMANENTES
+    ================================================= */
+
+    CREATE TABLE IF NOT EXISTS statuses (
+      id TEXT PRIMARY KEY,
+
+      user_id UUID NOT NULL
+        REFERENCES users(id)
+        ON DELETE CASCADE,
+
+      image TEXT NOT NULL,
+
+      caption TEXT DEFAULT '',
+
+      likes_count INTEGER NOT NULL DEFAULT 0,
+
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+
+      expires_at TIMESTAMPTZ NOT NULL
+    );
+
+
+    CREATE INDEX IF NOT EXISTS
+      statuses_user_idx
+
+      ON statuses(
+        user_id,
+        created_at DESC
+      );
+
+
+    CREATE INDEX IF NOT EXISTS
+      statuses_expires_idx
+
+      ON statuses(
+        expires_at
+      );
+
+
+    /* =================================================
+       COMENTÁRIOS DOS STATUS
+    ================================================= */
+
+    CREATE TABLE IF NOT EXISTS status_comments (
+      id TEXT PRIMARY KEY,
+
+      status_id TEXT NOT NULL
+        REFERENCES statuses(id)
+        ON DELETE CASCADE,
+
+      user_id UUID NOT NULL
+        REFERENCES users(id)
+        ON DELETE CASCADE,
+
+      text TEXT NOT NULL,
+
+      parent_comment_id TEXT,
+
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+
+    CREATE INDEX IF NOT EXISTS
+      status_comments_status_idx
+
+      ON status_comments(
+        status_id,
+        created_at ASC
+      );
+   
   console.log("✅ Banco de dados de contas pronto.");
 }
 
